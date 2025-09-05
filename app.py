@@ -639,10 +639,16 @@ def admin_orders_delete(oid):
 
 # ============================ MAIN ============================
 
-@app.before_first_request
-def _boot():
-    init_db()
+# ============================ BOOTSTRAP ============================
 
-if __name__ == "__main__":
+# Inicializa o banco na importação do app (compatível com Flask 3 + Gunicorn)
+try:
     init_db()
+except Exception as e:
+    # Log em stdout para aparecer nos logs do Render
+    print(f"[BOOT] init_db() falhou: {e}", flush=True)
+
+# Execução local (opcional)
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
