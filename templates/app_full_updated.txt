@@ -1,0 +1,685 @@
+import os
+import io
+import csv
+from datetime import datetime, date
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+
+APP_NAME = "Optic Purchase App"
+DB_PATH = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(__file__), "optic.db")
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+REPORTS_DIR = os.path.join(os.path.dirname(__file__), "reports")
+
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+
+# ============================ DB HELPERS ============================
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role in ('admin','comprador','pagador')),
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            code TEXT,
+            kind TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(name, kind)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            supplier_id INTEGER NOT NULL,
+            max_price REAL NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(product_id) REFERENCES products(id),
+            FOREIGN KEY(supplier_id) REFERENCES suppliers(id),
+            UNIQUE(product_id, supplier_id)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            buyer_id INTEGER NOT NULL,
+            supplier_id INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status in ('PENDENTE_PAGAMENTO','PAGO','CANCELADO')),
+            total REAL NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(buyer_id) REFERENCES users(id),
+            FOREIGN KEY(supplier_id) REFERENCES suppliers(id)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS purchase_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            unit_price REAL NOT NULL,
+            sphere REAL,
+            cylinder REAL,
+            base REAL,
+            addition REAL,
+            os_number TEXT,
+            FOREIGN KEY(order_id) REFERENCES purchase_orders(id),
+            FOREIGN KEY(product_id) REFERENCES products(id)
+        )
+    """)
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_items_os ON purchase_items(os_number)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL UNIQUE,
+            payer_id INTEGER NOT NULL,
+            method TEXT,
+            reference TEXT,
+            paid_at TEXT NOT NULL,
+            amount REAL NOT NULL,
+            FOREIGN KEY(order_id) REFERENCES purchase_orders(id),
+            FOREIGN KEY(payer_id) REFERENCES users(id)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+    conn.commit()
+    if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+        c.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
+            ("admin", generate_password_hash("admin123"), "admin", datetime.utcnow().isoformat())
+        )
+        conn.commit()
+    conn.close()
+
+@app.before_request
+def ensure_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    if not os.path.exists(DB_PATH):
+        init_db()
+
+def current_user():
+    if "user_id" not in session:
+        return None
+    conn = get_db()
+    u = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+    conn.close()
+    return u
+
+def require_role(*roles):
+    u = current_user()
+    if not u or u["role"] not in roles:
+        flash("Acesso negado.", "error")
+        return redirect(url_for("index"))
+
+def audit(action, details=""):
+    u = current_user()
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO audit_log (user_id, action, details, created_at) VALUES (?,?,?,?)",
+        (u["id"] if u else None, action, details, datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+@app.context_processor
+def inject_globals():
+    return {"now": datetime.utcnow(), "role": session.get("role"), "user": current_user(), "app_name": APP_NAME}
+
+# ============================ RELATÓRIOS (HELPERS) ============================
+
+def ensure_reports_dir():
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+
+def generate_excel_for_date(day_str: str) -> str:
+    """
+    Gera (ou sobrescreve) o Excel do dia especificado (YYYY-MM-DD),
+    com colunas: Fornecedor, Produto, Dioptria, Data, Valor (subtotal do item).
+    Considera itens dos pedidos marcados como pagos naquele dia.
+    """
+    ensure_reports_dir()
+    out_path = os.path.join(REPORTS_DIR, f"payments_{day_str}.xlsx")
+
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT
+            s.name  AS fornecedor,
+            p.name  AS produto,
+            i.sphere, i.cylinder, i.base, i.addition,
+            i.quantity, i.unit_price,
+            substr(pay.paid_at,1,10) AS data
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s       ON s.id = o.supplier_id
+        JOIN purchase_items i  ON i.order_id = o.id
+        JOIN products p        ON p.id = i.product_id
+        WHERE substr(pay.paid_at,1,10) = ?
+        ORDER BY s.name, p.name
+    """, (day_str,)).fetchall()
+    conn.close()
+
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Pagamentos do Dia"
+    ws.append(["Fornecedor", "Produto", "Dioptria", "Data", "Valor"])
+
+    def fmt_dioptria(sphere, cylinder, base, addition):
+        if sphere is not None or cylinder is not None:
+            esf = f"{sphere:+.2f}" if sphere is not None else "-"
+            cil = f"{cylinder:+.2f}" if cylinder is not None else "-"
+            return f"Esf {esf} / Cil {cil}"
+        else:
+            b = f"{base:.2f}" if base is not None else "-"
+            add = f"+{addition:.2f}" if addition is not None else "-"
+            return f"Base {b} / Adição {add}"
+
+    for r in rows:
+        subtotal = (r["quantity"] or 0) * (r["unit_price"] or 0.0)
+        ws.append([
+            r["fornecedor"],
+            r["produto"],
+            fmt_dioptria(r["sphere"], r["cylinder"], r["base"], r["addition"]),
+            r["data"],
+            float(f"{subtotal:.2f}")
+        ])
+
+    for i,w in enumerate([18,28,24,12,12],1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    wb.save(out_path)
+    return out_path
+
+# ============================ ROTAS BASE ============================
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username","").strip()
+        password = request.form.get("password","")
+        conn = get_db()
+        u = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        conn.close()
+        if u and check_password_hash(u["password_hash"], password):
+            session["user_id"] = u["id"]; session["role"] = u["role"]
+            flash(f"Bem-vindo, {u['username']}!", "success"); audit("login", f"user={u['username']}")
+            return redirect(url_for("index"))
+        flash("Credenciais inválidas", "error")
+    return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    u = current_user(); session.clear(); flash("Sessão encerrada.", "info"); audit("logout", f"user={u['username'] if u else ''}")
+    return redirect(url_for("login"))
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+# ============================ ADMIN: USUÁRIOS ============================
+
+@app.route("/admin/users")
+def admin_users():
+    if require_role("admin"): return require_role("admin")
+    conn = get_db()
+    users = conn.execute("SELECT id, username, role, created_at FROM users ORDER BY id").fetchall()
+    conn.close()
+    return render_template("admin_users.html", users=users)
+
+@app.route("/admin/users/create", methods=["POST"])
+def admin_users_create():
+    if require_role("admin"): return require_role("admin")
+    username = request.form.get("username","").strip()
+    password = request.form.get("password","")
+    role = request.form.get("role","comprador")
+    if not username or not password or role not in ("admin","comprador","pagador"):
+        flash("Dados inválidos.", "error"); return redirect(url_for("admin_users"))
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
+                     (username, generate_password_hash(password), role, datetime.utcnow().isoformat()))
+        conn.commit(); audit("user_create", f"{username}/{role}"); flash("Usuário criado.", "success")
+    except sqlite3.IntegrityError:
+        flash("Usuário já existe.", "error")
+    finally:
+        conn.close()
+    return redirect(url_for("admin_users"))
+
+@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
+def admin_users_delete(uid):
+    if require_role("admin"): return require_role("admin")
+    if uid == session.get("user_id"):
+        flash("Não é possível excluir o próprio usuário logado.", "error"); return redirect(url_for("admin_users"))
+    conn = get_db(); conn.execute("DELETE FROM users WHERE id=?", (uid,)); conn.commit(); conn.close()
+    audit("user_delete", f"id={uid}"); flash("Usuário removido.", "info"); return redirect(url_for("admin_users"))
+
+# ============================ ADMIN: FORNECEDORES ============================
+
+@app.route("/admin/suppliers")
+def admin_suppliers():
+    if require_role("admin"): return require_role("admin")
+    conn = get_db(); suppliers = conn.execute("SELECT * FROM suppliers ORDER BY name").fetchall(); conn.close()
+    return render_template("admin_suppliers.html", suppliers=suppliers)
+
+@app.route("/admin/suppliers/create", methods=["POST"])
+def admin_suppliers_create():
+    if require_role("admin"): return require_role("admin")
+    name = request.form.get("name","").strip()
+    if not name: flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO suppliers (name, active) VALUES (?,1)", (name,)); conn.commit()
+        audit("supplier_create", name); flash("Fornecedor criado.", "success")
+    except sqlite3.IntegrityError:
+        flash("Fornecedor já existe.", "error")
+    finally:
+        conn.close()
+    return redirect(url_for("admin_suppliers"))
+
+@app.route("/admin/suppliers/<int:sid>/toggle", methods=["POST"])
+def admin_suppliers_toggle(sid):
+    if require_role("admin"): return require_role("admin")
+    conn = get_db(); s = conn.execute("SELECT * FROM suppliers WHERE id=?", (sid,)).fetchone()
+    if not s: flash("Fornecedor não encontrado.", "error"); conn.close(); return redirect(url_for("admin_suppliers"))
+    new_active = 0 if s["active"] else 1
+    conn.execute("UPDATE suppliers SET active=? WHERE id=?", (new_active, sid)); conn.commit(); conn.close()
+    audit("supplier_toggle", f"id={sid} active={new_active}"); return redirect(url_for("admin_suppliers"))
+
+@app.route("/admin/suppliers/<int:sid>/delete", methods=["POST"])
+def admin_suppliers_delete(sid):
+    if require_role("admin"): return require_role("admin")
+    conn = get_db()
+    used_rule = conn.execute("SELECT 1 FROM rules WHERE supplier_id=? LIMIT 1", (sid,)).fetchone()
+    used_order = conn.execute("SELECT 1 FROM purchase_orders WHERE supplier_id=? LIMIT 1", (sid,)).fetchone()
+    if used_rule or used_order:
+        conn.close()
+        flash("Não é possível excluir: fornecedor em uso (regras ou pedidos).", "error")
+        return redirect(url_for("admin_suppliers"))
+    conn.execute("DELETE FROM suppliers WHERE id=?", (sid,))
+    conn.commit(); conn.close()
+    audit("supplier_delete", f"id={sid}")
+    flash("Fornecedor excluído.", "success")
+    return redirect(url_for("admin_suppliers"))
+
+# ============================ ADMIN: PRODUTOS ============================
+
+@app.route("/admin/products")
+def admin_products():
+    if require_role("admin"): return require_role("admin")
+    conn = get_db(); products = conn.execute("SELECT * FROM products ORDER BY kind, name").fetchall(); conn.close()
+    return render_template("admin_products.html", products=products)
+
+@app.route("/admin/products/create", methods=["POST"])
+def admin_products_create():
+    if require_role("admin"): return require_role("admin")
+    name = request.form.get("name","").strip(); code = request.form.get("code","").strip(); kind = request.form.get("kind","lente")
+    if kind not in ("lente","bloco") or not name: flash("Dados inválidos.", "error"); return redirect(url_for("admin_products"))
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO products (name, code, kind, active) VALUES (?,?,?,1)", (name, code, kind))
+        conn.commit(); audit("product_create", f"{name}/{kind}"); flash("Produto criado.", "success")
+    except sqlite3.IntegrityError:
+        flash("Produto já existe para este tipo.", "error")
+    finally:
+        conn.close()
+    return redirect(url_for("admin_products"))
+
+@app.route("/admin/products/<int:pid>/toggle", methods=["POST"])
+def admin_products_toggle(pid):
+    if require_role("admin"): return require_role("admin")
+    conn = get_db(); p = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+    if not p: flash("Produto não encontrado.", "error"); conn.close(); return redirect(url_for("admin_products"))
+    new_active = 0 if p["active"] else 1
+    conn.execute("UPDATE products SET active=? WHERE id=?", (new_active, pid)); conn.commit(); conn.close()
+    audit("product_toggle", f"id={pid} active={new_active}"); return redirect(url_for("admin_products"))
+
+@app.route("/admin/products/<int:pid>/delete", methods=["POST"])
+def admin_products_delete(pid):
+    if require_role("admin"): return require_role("admin")
+    conn = get_db()
+    used_rule = conn.execute("SELECT 1 FROM rules WHERE product_id=? LIMIT 1", (pid,)).fetchone()
+    used_item = conn.execute("SELECT 1 FROM purchase_items WHERE product_id=? LIMIT 1", (pid,)).fetchone()
+    if used_rule or used_item:
+        conn.close()
+        flash("Não é possível excluir: produto em uso (regras ou pedidos).", "error")
+        return redirect(url_for("admin_products"))
+    conn.execute("DELETE FROM products WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    audit("product_delete", f"id={pid}")
+    flash("Produto excluído.", "success")
+    return redirect(url_for("admin_products"))
+
+# ============================ ADMIN: REGRAS ============================
+
+@app.route("/admin/rules")
+def admin_rules():
+    if require_role("admin"): return require_role("admin")
+    conn = get_db()
+    rules = conn.execute("""
+        SELECT r.id, r.max_price, r.active,
+               p.name as product_name, p.kind as product_kind, p.id as product_id,
+               s.name as supplier_name, s.id as supplier_id
+        FROM rules r
+        JOIN products p ON p.id = r.product_id
+        JOIN suppliers s ON s.id = r.supplier_id
+        ORDER BY p.kind, p.name, s.name
+    """).fetchall()
+    products = conn.execute("SELECT * FROM products WHERE active=1 ORDER BY kind, name").fetchall()
+    suppliers = conn.execute("SELECT * FROM suppliers WHERE active=1 ORDER BY name").fetchall()
+    conn.close()
+    return render_template("admin_rules.html", rules=rules, products=products, suppliers=suppliers)
+
+@app.route("/admin/rules/create", methods=["POST"])
+def admin_rules_create():
+    if require_role("admin"): return require_role("admin")
+    product_id = request.form.get("product_id", type=int)
+    supplier_id = request.form.get("supplier_id", type=int)
+    max_price = request.form.get("max_price", type=float)
+    if not product_id or not supplier_id or max_price is None: flash("Dados inválidos.", "error"); return redirect(url_for("admin_rules"))
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO rules (product_id, supplier_id, max_price, active) VALUES (?,?,?,1)",
+                     (product_id, supplier_id, max_price))
+        conn.commit(); audit("rule_create", f"product={product_id} supplier={supplier_id} max={max_price}"); flash("Regra criada.", "success")
+    except sqlite3.IntegrityError:
+        flash("Essa combinação já existe.", "error")
+    finally:
+        conn.close()
+    return redirect(url_for("admin_rules"))
+
+@app.route("/admin/rules/<int:rid>/toggle", methods=["POST"])
+def admin_rules_toggle(rid):
+    if require_role("admin"): return require_role("admin")
+    conn = get_db(); r = conn.execute("SELECT * FROM rules WHERE id=?", (rid,)).fetchone()
+    if not r: flash("Regra não encontrada.", "error"); conn.close(); return redirect(url_for("admin_rules"))
+    new_active = 0 if r["active"] else 1
+    conn.execute("UPDATE rules SET active=? WHERE id=?", (new_active, rid)); conn.commit(); conn.close()
+    audit("rule_toggle", f"id={rid} active={new_active}"); return redirect(url_for("admin_rules"))
+
+# ============================ COMPRADOR ============================
+
+@app.route("/compras/novo", methods=["GET","POST"])
+def compras_novo():
+    if require_role("comprador","admin"): return require_role("comprador","admin")
+    conn = get_db()
+    combos = conn.execute("""
+        SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.kind,
+               s.id as supplier_id, s.name as supplier_name, r.max_price
+        FROM rules r
+        JOIN products p ON p.id = r.product_id
+        JOIN suppliers s ON s.id = r.supplier_id
+        WHERE r.active=1 AND p.active=1 AND s.active=1
+        ORDER BY s.name, p.kind, p.name
+    """).fetchall()
+
+    if request.method == "POST":
+        supplier_id = request.form.get("supplier_id", type=int)
+        note = request.form.get("note","").strip()
+        items_data, total = [], 0.0
+
+        for key in request.form:
+            if key.startswith("item-") and key.endswith("-rule_id"):
+                idx = key.split("-")[1]
+                rule_id = request.form.get(f"item-{idx}-rule_id", type=int)
+                qty = request.form.get(f"item-{idx}-qty", type=int)
+                price = request.form.get(f"item-{idx}-price", type=float)
+                sphere = request.form.get(f"item-{idx}-sphere", type=float)
+                cylinder = request.form.get(f"item-{idx}-cylinder", type=float)
+                base_val = request.form.get(f"item-{idx}-base", type=float)
+                addition = request.form.get(f"item-{idx}-addition", type=float)
+                os_number = (request.form.get(f"item-{idx}-os_number") or "").strip()
+
+                if not rule_id or not qty or qty <= 0 or price is None or price <= 0: continue
+                if not os_number: flash("Informe o número da OS para cada item.", "error"); continue
+
+                exists = conn.execute("SELECT 1 FROM purchase_items WHERE os_number=?", (os_number,)).fetchone()
+                if exists: flash(f"OS '{os_number}' já foi utilizada em outro pedido.", "error"); continue
+
+                rule = conn.execute("""
+                    SELECT r.*, p.id as product_id, p.kind as product_kind
+                    FROM rules r JOIN products p ON p.id = r.product_id
+                    WHERE r.id=? AND r.active=1
+                """, (rule_id,)).fetchone()
+                if not rule: flash("Regra inválida.", "error"); continue
+                if supplier_id != rule["supplier_id"]: flash("Fornecedor do item difere do fornecedor do pedido.", "error"); continue
+                if price > rule["max_price"] + 1e-6: flash(f"Preço excede o limite (máx R$ {rule['max_price']:.2f}).", "error"); continue
+
+                if rule["product_kind"] == "lente":
+                    if sphere is None or sphere < -20 or sphere > 20 or (abs(sphere*100) % 25 != 0):
+                        flash("Esférico inválido (−20 a +20 em passos de 0,25).", "error"); continue
+                    if cylinder is None or cylinder > 0 or cylinder < -15 or (abs(cylinder*100) % 25 != 0):
+                        flash("Cilíndrico inválido (0 até −15 em passos de 0,25).", "error"); continue
+                    base_to_save, addition_to_save = None, None
+                else:
+                    allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
+                    if base_val is None or base_val not in allowed_bases:
+                        flash("Base inválida (0,5; 1; 2; 4; 6; 8; 10).", "error"); continue
+                    if addition is None or addition < 1.0 or addition > 4.0 or (abs(addition*100) % 25 != 0):
+                        flash("Adição inválida (+1,00 até +4,00 em 0,25).", "error"); continue
+                    sphere, cylinder = None, None
+                    base_to_save, addition_to_save = base_val, addition
+
+                items_data.append({
+                    "product_id": rule["product_id"], "qty": qty, "price": price,
+                    "sphere": sphere, "cylinder": cylinder, "base": base_to_save,
+                    "addition": addition_to_save, "os_number": os_number
+                })
+                total += qty * price
+
+        if not supplier_id or not items_data:
+            flash("Informe fornecedor e adicione ao menos 1 item válido.", "error")
+            conn.close(); return render_template("compras_novo.html", combos=combos)
+
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (session["user_id"], supplier_id, "PENDENTE_PAGAMENTO", total, note,
+              datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+        order_id = cur.lastrowid
+
+        for it in items_data:
+            cur.execute("""
+                INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (order_id, it["product_id"], it["qty"], it["price"],
+                  it["sphere"], it["cylinder"], it["base"], it["addition"], it["os_number"]))
+
+        conn.commit(); conn.close(); audit("order_create", f"id={order_id}")
+        flash("Pedido criado e enviado ao pagador.", "success")
+        return redirect(url_for("compras_lista"))
+
+    conn.close(); return render_template("compras_novo.html", combos=combos)
+
+@app.route("/compras")
+def compras_lista():
+    if require_role("comprador","admin"): return require_role("comprador","admin")
+    conn = get_db()
+    orders = conn.execute("""
+        SELECT o.*, s.name as supplier_name
+        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.buyer_id=? ORDER BY o.id DESC
+    """, (session["user_id"],)).fetchall()
+    conn.close()
+    return render_template("compras_lista.html", orders=orders)
+
+@app.route("/compras/<int:oid>")
+def compras_detalhe(oid):
+    if require_role("comprador","admin"): return require_role("comprador","admin")
+    conn = get_db()
+    order = conn.execute("""
+        SELECT o.*, s.name as supplier_name
+        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.id=?
+    """, (oid,)).fetchone()
+    if not order:
+        conn.close(); flash("Pedido não encontrado.", "error"); return redirect(url_for("compras_lista"))
+    if session.get("role") != "admin" and order["buyer_id"] != session.get("user_id"):
+        conn.close(); flash("Acesso negado ao pedido.", "error"); return redirect(url_for("compras_lista"))
+    items = conn.execute("""
+        SELECT i.*, p.name as product_name, p.kind as product_kind
+        FROM purchase_items i JOIN products p ON p.id = i.product_id
+        WHERE i.order_id=? ORDER BY i.id
+    """, (oid,)).fetchall()
+    conn.close(); return render_template("compras_detalhe.html", order=order, items=items)
+
+# ============================ PAGADOR ============================
+
+@app.route("/pagamentos")
+def pagamentos_lista():
+    if require_role("pagador","admin"): return require_role("pagador","admin")
+    conn = get_db()
+    orders = conn.execute("""
+        SELECT o.*, u.username as buyer_name, s.name as supplier_name
+        FROM purchase_orders o
+        JOIN users u ON u.id = o.buyer_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.status='PENDENTE_PAGAMENTO'
+        ORDER BY o.created_at ASC
+    """).fetchall()
+    conn.close()
+    return render_template("pagamentos_lista.html", orders=orders)
+
+@app.route("/pagamentos/<int:oid>", methods=["GET","POST"])
+def pagamentos_detalhe(oid):
+    if require_role("pagador","admin"): return require_role("pagador","admin")
+    conn = get_db()
+    order = conn.execute("""
+        SELECT o.*, u.username as buyer_name, s.name as supplier_name
+        FROM purchase_orders o
+        JOIN users u ON u.id = o.buyer_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.id=?
+    """, (oid,)).fetchone()
+    items = conn.execute("""
+        SELECT i.*, p.name as product_name, p.kind as product_kind
+        FROM purchase_items i JOIN products p ON p.id = i.product_id
+        WHERE i.order_id=?
+    """, (oid,)).fetchall()
+    if not order:
+        conn.close(); flash("Pedido não encontrado.", "error"); return redirect(url_for("pagamentos_lista"))
+    if request.method == "POST":
+        method = request.form.get("method","PIX").strip()
+        reference = request.form.get("reference","").strip()
+        amount = request.form.get("amount", type=float)
+        if amount is None or amount <= 0:
+            flash("Valor inválido.", "error"); return render_template("pagamentos_detalhe.html", order=order, items=items)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
+            VALUES (?,?,?,?,?,?)
+        """, (oid, session["user_id"], method, reference, datetime.utcnow().isoformat(), amount))
+        cur.execute("""
+            UPDATE purchase_orders SET status='PAGO', updated_at=? WHERE id=?
+        """, (datetime.utcnow().isoformat(), oid))
+        conn.commit(); conn.close(); audit("order_paid", f"id={oid} amount={amount}")
+        flash("Pagamento registrado e pedido baixado como PAGO.", "success"); return redirect(url_for("pagamentos_lista"))
+    conn.close(); return render_template("pagamentos_detalhe.html", order=order, items=items)
+
+# ============================ RELATÓRIOS (ROTAS) ============================
+
+@app.route("/relatorios")
+def relatorios_index():
+    if require_role("admin","pagador"): return require_role("admin","pagador")
+    ensure_reports_dir()
+    existing = []
+    for fname in sorted(os.listdir(REPORTS_DIR)):
+        if fname.startswith("payments_") and fname.endswith(".xlsx"):
+            day = fname[len("payments_"):-len(".xlsx")]
+            existing.append({"day": day, "filename": fname})
+    default_day = date.today().isoformat()
+    return render_template("relatorios.html", existing=existing, default_day=default_day)
+
+@app.route("/relatorios/diario.xlsx")
+def relatorio_diario_xlsx():
+    if require_role("admin","pagador"): return require_role("admin","pagador")
+    day = request.args.get("date") or date.today().isoformat()
+    ensure_reports_dir()
+    out_path = os.path.join(REPORTS_DIR, f"payments_{day}.xlsx")
+    if not os.path.exists(out_path):
+        out_path = generate_excel_for_date(day)
+    return send_file(out_path,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     as_attachment=True, download_name=f"pagamentos_{day}.xlsx")
+
+@app.route("/relatorios/diario.csv")
+def relatorio_diario_csv():
+    if require_role("admin","pagador"): return require_role("admin","pagador")
+    today = date.today().isoformat()
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
+               o.id as order_id, s.name as supplier_name, u.username as payer_name
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        JOIN users u ON u.id = pay.payer_id
+        WHERE substr(pay.paid_at,1,10)=?
+        ORDER BY pay.paid_at ASC
+    """, (today,)).fetchall()
+    conn.close()
+    output = io.StringIO(); writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["paid_at","amount","method","reference","order_id","supplier","payer"])
+    for r in rows:
+        writer.writerow([r["paid_at"], f"{r['amount']:.2f}", r["method"], r["reference"], r["order_id"], r["supplier_name"], r["payer_name"]])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
+                     as_attachment=True, download_name=f"pagamentos_{today}.csv")
+
+# ============================ ADMIN: EXCLUIR PEDIDOS ============================
+
+@app.route("/admin/orders/<int:oid>/delete", methods=["POST"])
+def admin_orders_delete(oid):
+    if require_role("admin"): return require_role("admin")
+    conn = get_db()
+    conn.execute("DELETE FROM payments WHERE order_id=?", (oid,))
+    conn.execute("DELETE FROM purchase_items WHERE order_id=?", (oid,))
+    cur = conn.execute("DELETE FROM purchase_orders WHERE id=?", (oid,))
+    conn.commit(); conn.close()
+    if cur.rowcount:
+        audit("order_delete", f"id={oid}")
+        flash("Pedido excluído.", "success")
+    else:
+        flash("Pedido não encontrado.", "error")
+    return redirect(url_for("compras_lista"))
+
+# ============================ MAIN ============================
+
+if __name__ == "__main__":
+    init_db()
+    app.run(host="0.0.0.0", port=5000, debug=True)

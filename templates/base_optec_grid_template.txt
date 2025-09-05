@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ app_name }}</title>
+  <style>
+    :root{
+      --azul:#1f6feb; --azul-escuro:#0d419d; --azul-claro:#dbe9ff;
+      --txt:#0b1a33; --cinza:#f5f7fb; --borda:#d6dbe6;
+    }
+    *{ box-sizing:border-box; }
+    body { font-family: Arial, sans-serif; margin:0; padding:0; background:var(--cinza); color:var(--txt); }
+    header { background:var(--azul); color:#fff; }
+    header .wrap{
+      max-width:1100px; margin:0 auto; padding:12px 16px;
+      display:grid; grid-template-columns:auto 1fr; gap:12px; align-items:center;
+    }
+    .brand { font-weight:bold; font-size:1.05rem; letter-spacing:.3px; white-space:nowrap; }
+    .menu-grid{
+      display:grid;
+      grid-auto-flow:column dense;
+      grid-template-rows:repeat(2, 44px);  /* quadradinho em cima e embaixo */
+      grid-auto-columns:minmax(120px, auto);
+      justify-content:start;
+      column-gap:8px; row-gap:8px;
+      align-content:center;
+    }
+    .menu-grid a{
+      display:grid; place-items:center;
+      background:rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.45);
+      border-radius:10px;
+      color:#fff; text-decoration:none; padding:0 10px;
+      text-align:center;
+    }
+    .menu-grid a:hover{ background:rgba(255,255,255,.18); }
+    .container { max-width:1100px; margin:18px auto; padding:0 16px 24px; }
+    .flash { padding:10px; margin:10px 0; border-radius:8px; border:1px solid; }
+    .flash.error { background:#ffe6e6; color:#8b0000; border-color:#ffb3b3; }
+    .flash.success { background:#e8ffe8; color:#064d06; border-color:#b7f0b7; }
+    .flash.info { background:#e6f0ff; color:#0d419d; border-color:#b3c8ff; }
+    table { border-collapse:separate; border-spacing:0; width:100%; background:#fff; border:1px solid var(--borda); border-radius:10px; overflow:hidden; }
+    th, td { border-bottom:1px solid var(--borda); padding:10px; text-align:left; }
+    th { background:var(--azul-claro); color:#102a56; }
+    tr:last-child td{ border-bottom:none; }
+    .btn { display:inline-block; padding:6px 10px; border:1px solid var(--borda); border-radius:8px; background:#fff; cursor:pointer; text-decoration:none; }
+    .btn.primary { background:var(--azul); color:#fff; border-color:var(--azul); }
+    .btn.danger { background:#d7263d; color:#fff; border-color:#d7263d; }
+    .btn.small { font-size:0.9em; padding:4px 8px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    textarea, input, select { width:100%; padding:8px; margin:6px 0; border:1px solid var(--borda); border-radius:8px; }
+    h2{ color:#0d419d; }
+
+    /* Responsivo: quando apertar muito, vira grade de 2 colunas */
+    @media (max-width: 720px){
+      .menu-grid{
+        grid-auto-flow:row;
+        grid-template-rows:none;
+        grid-template-columns:repeat(2, minmax(120px,1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="brand">OPTEC PUSHCASE APP</div>
+      <nav class="menu-grid">
+        <a href="{{ url_for('index') }}">Início</a>
+        {% if not user %}
+          <a href="{{ url_for('login') }}">Login</a>
+        {% else %}
+          {% if role == 'admin' %}
+            <a href="{{ url_for('admin_users') }}">Admin Usuários</a>
+            <a href="{{ url_for('admin_suppliers') }}">Admin Fornec.</a>
+            <a href="{{ url_for('admin_products') }}">Admin Produtos</a>
+            <a href="{{ url_for('admin_rules') }}">Admin Regras</a>
+          {% endif %}
+          {% if role in ['comprador','admin'] %}
+            <a href="{{ url_for('compras_lista') }}">Meus Pedidos</a>
+            <a href="{{ url_for('compras_novo') }}">Novo Pedido</a>
+          {% endif %}
+          {% if role in ['pagador','admin'] %}
+            <a href="{{ url_for('pagamentos_lista') }}">Pendentes</a>
+            <a href="{{ url_for('relatorios_index') }}">Relatórios</a>
+          {% endif %}
+          <a href="{{ url_for('logout') }}">Sair</a>
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for cat,msg in messages %}
+          <div class="flash {{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

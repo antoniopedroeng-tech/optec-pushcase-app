@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+{% if user %}
+  <h2>Olá, {{ user.username }} ({{ user.role }})</h2>
+  <p>Escolha uma opção no topo para começar.</p>
+{% else %}
+  <p><a class="btn primary" href="{{ url_for('login') }}">Fazer login</a></p>
+{% endif %}
+{% endblock %}

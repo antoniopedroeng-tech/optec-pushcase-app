@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Admin → Fornecedores</h2>
+
+<form method="post" action="{{ url_for('admin_suppliers_create') }}" style="max-width:420px;">
+  <label>Nome</label>
+  <input name="name" required>
+  <button class="btn primary">Criar</button>
+</form>
+
+<table style="margin-top:16px;">
+  <tr><th>ID</th><th>Nome</th><th>Ativo</th><th>Ações</th></tr>
+  {% for s in suppliers %}
+  <tr>
+    <td>{{ s.id }}</td>
+    <td>{{ s.name }}</td>
+    <td>{{ 'Sim' if s.active else 'Não' }}</td>
+    <td>
+      <form method="post" action="{{ url_for('admin_suppliers_toggle', sid=s.id) }}" style="display:inline;">
+        <button class="btn small">{{ 'Desativar' if s.active else 'Ativar' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_suppliers_delete', sid=s.id) }}" style="display:inline;" onsubmit="return confirm('Excluir este fornecedor?');">
+        <button class="btn small danger">Excluir</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

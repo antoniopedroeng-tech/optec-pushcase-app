@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_name }} - {% if user %}{{ user.username }}{% else %}Sistema{% endif %}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; background:#f6f7fb; }
+    header { background:#0a2a6b; color:white; padding:10px 16px; }
+    header a { color:#cde; text-decoration:none; margin-right:12px; font-weight:600; }
+    header a.active { text-decoration:underline; color:#fff; }
+    .container { max-width: 980px; margin: 24px auto; background:white; padding:16px 20px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+    .muted { color:#999; }
+    .btn { display:inline-block; border:1px solid #ccc; padding:6px 10px; border-radius:6px; background:#f3f4f7; text-decoration:none; color:#222; font-weight:600; }
+    .btn.primary { background:#0a2a6b; color:white; border-color:#08306b; }
+    .btn.danger { background:#b00020; color:white; border-color:#a00020; }
+    .btn.warn { background:#f0b400; color:#222; border-color:#d9a000; }
+    .btn.small { padding:4px 8px; font-size: 90%; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom:1px solid #eee; padding:8px; text-align:left; }
+    th { background:#f0f2f7; }
+    .flash { padding:8px 10px; border-radius:6px; margin-bottom:10px; }
+    .flash.success { background:#e6f6eb; color:#106b21; border:1px solid #bde5c8; }
+    .flash.error { background:#fdecea; color:#8a1f17; border:1px solid #f5c6cb; }
+    .flash.info { background:#e8f1fb; color:#0b4f9c; border:1px solid #c6dbf7; }
+    form.inline { display:inline; }
+    input, select, textarea { padding:6px 8px; border:1px solid #ccc; border-radius:6px; width:100%; box-sizing:border-box; }
+    label { display:block; margin-top:10px; font-weight:600; }
+    footer { text-align:center; color:#777; margin:24px 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .right { float:right; }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <strong>{{ app_name }}</strong>
+    &nbsp;&nbsp;|&nbsp;
+    <a href="{{ url_for('index') }}" {% if request.endpoint == 'index' %}class="active"{% endif %}>Início</a>
+
+    {% if user %}
+      {% if role == 'admin' %}
+        <a href="{{ url_for('admin_users') }}">Admin → Usuários</a>
+        <a href="{{ url_for('admin_suppliers') }}">Admin → Fornecedores</a>
+        <a href="{{ url_for('admin_products') }}">Admin → Produtos</a>
+        <a href="{{ url_for('admin_rules') }}">Admin → Regras</a>
+      {% endif %}
+
+      {% if role in ['comprador','admin'] %}
+        <a href="{{ url_for('compras_novo') }}">Comprador → Novo Pedido</a>
+        <a href="{{ url_for('compras_lista') }}">Comprador → Meus Pedidos</a>
+      {% endif %}
+
+      {% if role in ['pagador','admin'] %}
+        <a href="{{ url_for('pagamentos_lista') }}">Pagador → Pendentes</a>
+        <a href="{{ url_for('relatorio_diario') }}">Relatório (csv)</a>
+      {% endif %}
+
+      <span class="right">Logado como: {{ user.username }} • <a href="{{ url_for('logout') }}">Sair</a></span>
+    {% else %}
+      <a href="{{ url_for('login') }}">Login</a>
+    {% endif %}
+  </div>
+</header>
+
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for cat, msg in messages %}
+        <div class="flash {{ cat }}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</div>
+
+<footer>
+  <small class="muted">© {{ now.year }} — Sistema de Pedidos</small>
+</footer>
+</body>
+</html>

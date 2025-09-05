@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Pedido #{{ order.id }}</h2>
+
+<p>
+  <strong>Fornecedor:</strong> {{ order.supplier_name }}<br>
+  <strong>Status:</strong> {{ order.status }}<br>
+  <strong>Total:</strong> R$ {{ '%.2f'|format(order.total) }}<br>
+  <span class="muted">Criado em: {{ order.created_at }}</span>
+</p>
+
+<h3>Itens</h3>
+<table>
+  <tr>
+    <th>Fornecedor</th>
+    <th>OS</th>
+    <th>Produto</th>
+    <th>Tipo</th>
+    <th>Qtd</th>
+    <th>Preço unit (R$)</th>
+    <th>Detalhes</th>
+    <th>Subtotal (R$)</th>
+  </tr>
+  {% for i in items %}
+  <tr>
+    <td>{{ order.supplier_name }}</td>
+    <td>{{ i.os_number or '-' }}</td>
+    <td>{{ i.product_name }}</td>
+    <td>{{ i.product_kind }}</td>
+    <td>{{ i.quantity }}</td>
+    <td>{{ '%.2f'|format(i.unit_price) }}</td>
+    <td>
+      {% if i.product_kind == 'lente' %}
+        Esf: {{ i.sphere if i.sphere is not none else '-' }} /
+        Cil: {{ i.cylinder if i.cylinder is not none else '-' }}
+      {% else %}
+        Base: {{ i.base if i.base is not none else '-' }} /
+        Adição: {{ i.addition if i.addition is not none else '-' }}
+      {% endif %}
+    </td>
+    <td>{{ '%.2f'|format(i.quantity * i.unit_price) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<p style="margin-top:12px;">
+  <a class="btn" href="{{ url_for('compras_lista') }}">Voltar para a lista</a>
+</p>
+{% endblock %}

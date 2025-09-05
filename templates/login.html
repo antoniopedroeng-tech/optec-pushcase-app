@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Login</h2>
+<form method="post" style="max-width:360px;">
+  <label>Usuário
+    <input name="username" required>
+  </label>
+  <label>Senha
+    <input name="password" type="password" required>
+  </label>
+  <div style="margin-top:10px;">
+    <button class="btn primary">Entrar</button>
+  </div>
+</form>
+<p class="muted">Usuário inicial: <code>admin</code> / Senha: <code>admin123</code> (altere depois)</p>
+{% endblock %}

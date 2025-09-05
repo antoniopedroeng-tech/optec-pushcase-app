@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Pagamento do Pedido #{{ order.id }}</h2>
+<p><strong>Fornecedor:</strong> {{ order.supplier_name }}<br>
+<strong>Comprador:</strong> {{ order.buyer_name }}<br>
+<strong>Status:</strong> {{ order.status }}<br>
+<strong>Total:</strong> R$ {{ '%.2f'|format(order.total) }}</p>
+
+<h3>Itens</h3>
+<table>
+  <tr>
+    <th>Fornecedor</th><th>OS</th><th>Produto</th><th>Tipo</th><th>Qtd</th><th>Preço unit (R$)</th><th>Detalhes</th><th>Subtotal (R$)</th>
+  </tr>
+  {% for i in items %}
+    <tr>
+      <td>{{ order.supplier_name }}</td>
+      <td>{{ i.os_number or '-' }}</td>
+      <td>{{ i.product_name }}</td>
+      <td>{{ i.product_kind }}</td>
+      <td>{{ i.quantity }}</td>
+      <td>{{ '%.2f'|format(i.unit_price) }}</td>
+      <td>
+        {% if i.product_kind == 'lente' %}
+          Esf: {{ i.sphere if i.sphere is not none else '-' }} /
+          Cil: {{ i.cylinder if i.cylinder is not none else '-' }}
+        {% else %}
+          Base: {{ i.base if i.base is not none else '-' }} /
+          Adição: {{ i.addition if i.addition is not none else '-' }}
+        {% endif %}
+      </td>
+      <td>{{ '%.2f'|format(i.quantity * i.unit_price) }}</td>
+    </tr>
+  {% endfor %}
+</table>
+
+<form method="post" style="max-width:420px; margin-top:12px;">
+  <label>Método</label>
+  <select name="method">
+    <option>PIX</option>
+    <option>TED</option>
+    <option>Cartão</option>
+    <option>Outro</option>
+  </select>
+  <label>Referência / Comprovante</label>
+  <input name="reference" placeholder="ID do PIX, referência do banco, etc.">
+  <label>Valor pago (R$)</label>
+  <input name="amount" type="number" step="0.01" min="0" value="{{ '%.2f'|format(order.total) }}">
+  <div style="margin-top:10px;">
+    <button class="btn primary">Confirmar pagamento e dar baixa</button>
+  </div>
+</form>
+{% endblock %}

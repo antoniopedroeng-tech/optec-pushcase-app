@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Admin → Produtos</h2>
+
+<form method="post" action="{{ url_for('admin_products_create') }}" class="grid" style="max-width:620px;">
+  <div>
+    <label>Nome</label>
+    <input name="name" required>
+  </div>
+  <div>
+    <label>Código (opcional)</label>
+    <input name="code">
+  </div>
+  <div>
+    <label>Tipo</label>
+    <select name="kind">
+      <option value="lente">Lente</option>
+      <option value="bloco">Bloco</option>
+    </select>
+  </div>
+  <div style="align-self:end;">
+    <button class="btn primary">Criar</button>
+  </div>
+</form>
+
+<table style="margin-top:16px;">
+  <tr><th>ID</th><th>Nome</th><th>Código</th><th>Tipo</th><th>Ativo</th><th>Ações</th></tr>
+  {% for p in products %}
+  <tr>
+    <td>{{ p.id }}</td>
+    <td>{{ p.name }}</td>
+    <td>{{ p.code or '-' }}</td>
+    <td>{{ p.kind }}</td>
+    <td>{{ 'Sim' if p.active else 'Não' }}</td>
+    <td>
+      <form method="post" action="{{ url_for('admin_products_toggle', pid=p.id) }}" style="display:inline;">
+        <button class="btn small">{{ 'Desativar' if p.active else 'Ativar' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_products_delete', pid=p.id) }}" style="display:inline;" onsubmit="return confirm('Excluir este produto?');">
+        <button class="btn small danger">Excluir</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

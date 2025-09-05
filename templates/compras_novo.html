@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Comprador → Novo Pedido</h2>
+
+<form method="post" id="formPedido">
+  <label>Fornecedor</label>
+  <select name="supplier_id" id="supplier" required>
+    <option value="">-- selecione --</option>
+    {% for s in combos|unique(attribute='supplier_id') %}
+      <option value="{{ s.supplier_id }}">{{ s.supplier_name }}</option>
+    {% endfor %}
+  </select>
+
+  <label>Tipo</label>
+  <select id="tipo">
+    <option value="">-- selecione --</option>
+    <option value="lente">Lente</option>
+    <option value="bloco">Bloco</option>
+  </select>
+
+  <label>Produto</label>
+  <select id="produto">
+    <option value="">-- selecione --</option>
+    {% for c in combos %}
+      <option value="{{ c.rule_id }}"
+              data-supplier="{{ c.supplier_id }}"
+              data-supplier-name="{{ c.supplier_name }}"
+              data-kind="{{ c.kind }}"
+              data-product-id="{{ c.product_id }}"
+              data-max-price="{{ '%.2f'|format(c.max_price) }}">
+        {{ c.product_name }} ({{ c.kind }}) — Máx R$ {{ '%.2f'|format(c.max_price) }}
+      </option>
+    {% endfor %}
+  </select>
+
+  <label>OS (Ordem de Serviço)</label>
+  <input type="text" id="os_number" placeholder="Ex.: 12345" />
+
+  <div id="campos-lente" style="display:none;">
+    <div class="grid">
+      <div>
+        <label>Esférico (−20 a +20, passo 0,25)</label>
+        <input type="number" id="sphere" step="0.25" min="-20" max="20" placeholder="ex.: -2.00">
+      </div>
+      <div>
+        <label>Cilíndrico (0 até −15, passo 0,25)</label>
+        <input type="number" id="cylinder" step="0.25" min="-15" max="0" placeholder="ex.: -0.75">
+      </div>
+    </div>
+  </div>
+
+  <div id="campos-bloco" style="display:none;">
+    <div class="grid">
+      <div>
+        <label>Base</label>
+        <select id="base">
+          <option value="">-- selecione --</option>
+          <option>0.5</option><option>1</option><option>2</option>
+          <option>4</option><option>6</option><option>8</option><option>10</option>
+        </select>
+      </div>
+      <div>
+        <label>Adição (+1.00 a +4.00, passo 0,25)</label>
+        <input type="number" id="addition" step="0.25" min="1" max="4" placeholder="ex.: 2.00">
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <label>Quantidade</label>
+      <input type="number" id="qty" min="1" value="1">
+    </div>
+    <div>
+      <label>Preço unitário (R$)</label>
+      <input type="number" id="price" step="0.01" min="0">
+    </div>
+  </div>
+
+  <div style="margin-top:8px;">
+    <button type="button" class="btn" onclick="adicionarItem()">Adicionar item</button>
+  </div>
+
+  <label>Observação (opcional)</label>
+  <textarea name="note" placeholder="Instruções para o fornecedor"></textarea>
+
+  <h3>Itens do pedido</h3>
+  <table id="tabelaItens">
+    <tr>
+      <th>Fornecedor</th><th>OS</th><th>Produto</th><th>Tipo</th><th>Detalhes</th><th>Qtd</th><th>Preço (R$)</th><th></th>
+    </tr>
+  </table>
+
+  <div style="margin-top:12px;">
+    <button class="btn primary">Enviar pedido ao pagador</button>
+  </div>
+</form>
+
+<script>
+const supplierSel = document.getElementById('supplier');
+const tipoSel = document.getElementById('tipo');
+const produtoSel = document.getElementById('produto');
+
+const camposLente = document.getElementById('campos-lente');
+const camposBloco = document.getElementById('campos-bloco');
+const sphereInput = document.getElementById('sphere');
+const cylinderInput = document.getElementById('cylinder');
+const baseSel = document.getElementById('base');
+const additionInput = document.getElementById('addition');
+const osInput = document.getElementById('os_number');
+
+function filtrarProdutos(){
+  const sup = supplierSel.value;
+  const tipo = tipoSel.value;
+  for (const opt of produtoSel.options) {
+    if (!opt.value) { opt.style.display = ''; continue; }
+    const okSup = !sup || opt.getAttribute('data-supplier') === sup;
+    const okTipo = !tipo || opt.getAttribute('data-kind') === tipo;
+    opt.style.display = (okSup && okTipo) ? '' : 'none';
+  }
+  produtoSel.value = '';
+}
+
+supplierSel.addEventListener('change', filtrarProdutos);
+tipoSel.addEventListener('change', () => {
+  filtrarProdutos();
+  const t = tipoSel.value;
+  camposLente.style.display = (t === 'lente') ? '' : 'none';
+  camposBloco.style.display = (t === 'bloco') ? '' : 'none';
+});
+
+let idx = 0;
+
+function adicionarItem(){
+  const sup = supplierSel.value;
+  const supText = supplierSel.options[supplierSel.selectedIndex]?.text || '';
+  const tipo = tipoSel.value;
+  const opt = produtoSel.selectedOptions[0];
+  const osn = (osInput.value || '').trim();
+
+  if (!sup) { alert('Selecione o fornecedor.'); return; }
+  if (!tipo) { alert('Selecione o tipo (Lente/Bloco).'); return; }
+  if (!opt || !opt.value) { alert('Selecione o produto.'); return; }
+  if (!osn) { alert('Informe a OS deste item.'); return; }
+
+  const ruleId = opt.value;
+  const maxPrice = parseFloat(opt.getAttribute('data-max-price'));
+  const qty = parseInt(document.getElementById('qty').value || '0', 10);
+  const price = parseFloat(document.getElementById('price').value || '0');
+
+  if (!qty || qty <= 0) { alert('Quantidade inválida.'); return; }
+  if (!price || price <= 0) { alert('Preço inválido.'); return; }
+  if (price > maxPrice + 1e-6) { alert('Preço acima do máximo permitido pela regra.'); return; }
+
+  let detalhes = '';
+  let sphere = '', cylinder = '', base = '', addition = '';
+
+  if (tipo === 'lente') {
+    sphere = sphereInput.value;
+    cylinder = cylinderInput.value;
+    if (sphere === '' || cylinder === '') { alert('Informe esférico e cilíndrico.'); return; }
+    const esf = parseFloat(sphere), cil = parseFloat(cylinder);
+    if (isNaN(esf) || esf < -20 || esf > 20 || Math.round(Math.abs(esf*100)) % 25 !== 0) {
+      alert('Esférico inválido (−20 a +20, passo 0,25).'); return;
+    }
+    if (isNaN(cil) || cil > 0 || cil < -15 || Math.round(Math.abs(cil*100)) % 25 !== 0) {
+      alert('Cilíndrico inválido (0 até −15, passo 0,25).'); return;
+    }
+    detalhes = `Esf: ${esf.toFixed(2)} / Cil: ${cil.toFixed(2)}`;
+  } else {
+    base = baseSel.value;
+    addition = additionInput.value;
+    if (!base) { alert('Selecione a base.'); return; }
+    const add = parseFloat(addition);
+    if (addition === '' || isNaN(add) || add < 1 || add > 4 || Math.round(Math.abs(add*100)) % 25 !== 0) {
+      alert('Adição inválida (+1,00 até +4,00 em 0,25).'); return;
+    }
+    detalhes = `Base: ${base} / Adição: ${add.toFixed(2)}`;
+  }
+
+  // Linha visível
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td>${supText}</td>
+    <td>${osn}</td>
+    <td>${opt.text.split(' — ')[0]}</td>
+    <td>${tipo}</td>
+    <td>${detalhes}</td>
+    <td>${qty}</td>
+    <td>${price.toFixed(2)}</td>
+    <td><button type="button" class="btn small" onclick="this.closest('tr').remove(); document.getElementById('hidden-${idx}').remove()">Remover</button></td>
+  `;
+
+  // Pacote de inputs escondidos (enviados ao backend)
+  const div = document.createElement('div');
+  div.id = `hidden-${idx}`;
+  div.innerHTML = `
+    <input type="hidden" name="item-${idx}-rule_id" value="${ruleId}">
+    <input type="hidden" name="item-${idx}-qty" value="${qty}">
+    <input type="hidden" name="item-${idx}-price" value="${price.toFixed(2)}">
+    <input type="hidden" name="item-${idx}-os_number" value="${osn}">
+    ${tipo === 'lente' ? `
+      <input type="hidden" name="item-${idx}-sphere" value="${parseFloat(sphere).toFixed(2)}">
+      <input type="hidden" name="item-${idx}-cylinder" value="${parseFloat(cylinder).toFixed(2)}">
+    ` : `
+      <input type="hidden" name="item-${idx}-base" value="${parseFloat(base).toFixed(2)}">
+      <input type="hidden" name="item-${idx}-addition" value="${parseFloat(addition).toFixed(2)}">
+    `}
+  `;
+  document.getElementById('tabelaItens').appendChild(tr);
+  document.getElementById('formPedido').appendChild(div);
+
+  idx += 1;
+
+  // limpa campos para o próximo item
+  osInput.value = '';
+  document.getElementById('qty').value = 1;
+  document.getElementById('price').value = '';
+  sphereInput.value = '';
+  cylinderInput.value = '';
+  baseSel.value = '';
+  additionInput.value = '';
+}
+</script>
+{% endblock %}

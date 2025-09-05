@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Admin → Regras (Produto×Fornecedor×Preço Máximo)</h2>
+<form method="post" action="{{ url_for('admin_rules_create') }}" class="grid" style="margin-bottom:16px;">
+  <div>
+    <label>Produto</label>
+    <select name="product_id">
+      {% for p in products %}
+        <option value="{{p.id}}">{{p.kind}} - {{p.name}}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label>Fornecedor</label>
+    <select name="supplier_id">
+      {% for s in suppliers %}
+        <option value="{{s.id}}">{{s.name}}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label>Preço máximo (R$)</label>
+    <input name="max_price" type="number" step="0.01" min="0" required>
+  </div>
+  <div style="display:flex; align-items:flex-end;">
+    <button class="btn primary">Criar Regra</button>
+  </div>
+</form>
+<table>
+  <tr><th>ID</th><th>Produto</th><th>Fornecedor</th><th>Preço Máx</th><th>Status</th><th>Ações</th></tr>
+  {% for r in rules %}
+  <tr>
+    <td>{{ r.id }}</td>
+    <td>{{ r.product_kind }} - {{ r.product_name }}</td>
+    <td>{{ r.supplier_name }}</td>
+    <td>R$ {{ '%.2f'|format(r.max_price) }}</td>
+    <td>{{ 'Ativa' if r.active else 'Inativa' }}</td>
+    <td>
+      <form method="post" action="{{ url_for('admin_rules_toggle', rid=r.id) }}" class="inline">
+        <button class="btn warn small">{{ 'Desativar' if r.active else 'Ativar' }}</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
