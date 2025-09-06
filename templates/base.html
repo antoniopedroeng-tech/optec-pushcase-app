@@ -75,6 +75,9 @@
             <a href="{{ url_for('admin_suppliers') }}">Admin Fornec.</a>
             <a href="{{ url_for('admin_products') }}">Admin Produtos</a>
             <a href="{{ url_for('admin_rules') }}">Admin Regras</a>
+            <!-- NOVOS atalhos do Admin -->
+            <a href="{{ url_for('admin_import') }}">Importar (Admin)</a>
+            <a href="{{ url_for('admin_import_template') }}">Template Import</a>
           {% endif %}
           {% if role in ['comprador','admin'] %}
             <a href="{{ url_for('compras_lista') }}">Meus Pedidos</a>

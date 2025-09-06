@@ -186,9 +186,13 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
         ORDER BY s.name, p.name
     """, day=day_str)
 
-    from openpyxl import Workbook
-    from openpyxl.utils import get_column_letter
-    from openpyxl.styles import Font
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font
+    except ImportError as e:
+        # Sem openpyxl, vamos sinalizar com uma exceção para a rota decidir o fallback
+        raise RuntimeError("openpyxl não está instalado") from e
 
     wb = Workbook()
     ws = wb.active
@@ -221,9 +225,12 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
     # Linha de TOTAL
     ws.append(["", "", "", "", "", ""])
     ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
+    # Bold total
+    from openpyxl.styles import Font  # seguro aqui
     ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
     ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
 
+    from openpyxl.utils import get_column_letter
     for i, w in enumerate([18, 28, 12, 26, 12, 14], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -429,10 +436,26 @@ def admin_rules_toggle(rid):
 
 @app.route("/admin/import/template.xlsx")
 def admin_import_template():
-    # Gera o template Excel em memória e envia
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
-    from openpyxl.utils import get_column_letter
+    # Tenta gerar XLSX com openpyxl; se faltar, mostra instrução clara
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        html = """
+        {% extends "base.html" %}
+        {% block title %}Template de Importação{% endblock %}
+        {% block content %}
+        <div class="container" style="max-width:800px;margin:0 auto">
+          <h2>Template de Importação</h2>
+          <p style="color:#b00"><strong>Dependência ausente:</strong> o servidor não tem <code>openpyxl</code> instalado, necessário para gerar o arquivo .xlsx.</p>
+          <p>Adicione <code>openpyxl</code> ao seu <code>requirements.txt</code> e faça o deploy novamente:</p>
+          <pre>openpyxl==3.1.5</pre>
+          <p>Depois disso, volte e clique em “Baixar Template”.</p>
+        </div>
+        {% endblock %}
+        """
+        return render_template_string(html)
 
     wb = Workbook()
 
@@ -444,8 +467,6 @@ def admin_import_template():
     for cell in ws1[1]:
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    ws1.column_dimensions[get_column_letter(1)].width = 30
-    ws1.column_dimensions[get_column_letter(2)].width = 10
 
     ws2 = wb.create_sheet("Products")
     ws2.append(["name", "code", "kind", "active", "in_stock"])
@@ -454,11 +475,6 @@ def admin_import_template():
     for cell in ws2[1]:
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    ws2.column_dimensions[get_column_letter(1)].width = 30
-    ws2.column_dimensions[get_column_letter(2)].width = 15
-    ws2.column_dimensions[get_column_letter(3)].width = 12
-    ws2.column_dimensions[get_column_letter(4)].width = 10
-    ws2.column_dimensions[get_column_letter(5)].width = 10
 
     ws3 = wb.create_sheet("Rules")
     ws3.append(["product_name", "product_kind", "supplier_name", "max_price", "active"])
@@ -467,11 +483,6 @@ def admin_import_template():
     for cell in ws3[1]:
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    ws3.column_dimensions[get_column_letter(1)].width = 30
-    ws3.column_dimensions[get_column_letter(2)].width = 12
-    ws3.column_dimensions[get_column_letter(3)].width = 30
-    ws3.column_dimensions[get_column_letter(4)].width = 12
-    ws3.column_dimensions[get_column_letter(5)].width = 10
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -612,6 +623,9 @@ def admin_import():
                                 else: report["rules"]["updated"] += 1
 
                 flash("Importação concluída.", "success")
+            except ImportError:
+                report["errors"].append("Dependência ausente: instale 'openpyxl' no servidor.")
+                flash("Instale 'openpyxl' para importar planilhas .xlsx.", "error")
             except Exception as e:
                 report["errors"].append(str(e))
                 flash("Falha na importação. Veja os erros.", "error")
@@ -621,10 +635,12 @@ def admin_import():
     {% extends "base.html" %}
     {% block title %}Importação em Massa{% endblock %}
     {% block content %}
-    <div class="container" style="max-width: 800px; margin: 0 auto;">
-      <h2>Importar planilha (Excel .xlsx)</h2>
+    <div class="container" style="max-width: 900px; margin: 0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;">
+        <h2>Importar planilha (Excel .xlsx)</h2>
+        <a class="btn btn-sm btn-primary" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
+      </div>
       <p>Use o modelo com abas <strong>Suppliers</strong>, <strong>Products</strong> e <strong>Rules</strong>.</p>
-      <p><a href="{{ url_for('admin_import_template') }}">Baixar template Excel</a></p>
       <form method="post" enctype="multipart/form-data" style="margin-top: 16px;">
         <input type="file" name="file" accept=".xlsx" required />
         <button type="submit">Importar</button>
@@ -651,7 +667,7 @@ def admin_import():
     """
     return render_template_string(html, report=report)
 
-# -------- Comprador: Novo Pedido (com lista temporária, código do produto, cilíndrico negativo) --------
+# -------- Comprador: Novo Pedido --------
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
@@ -669,7 +685,6 @@ def compras_novo():
     """)
     products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
 
-    # >>> Conversão para JSON-serializável (evita erro 500 no template) <<<
     combos = [dict(r) for r in combos]
     products = [dict(p) for p in products]
 
@@ -793,6 +808,8 @@ def compras_novo():
             items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": d2})
 
         # Limite de 2 por OS
+        existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
+        existing_n = int(existing["n"] if existing else 0)
         if existing_n + len(items_to_add) > 2:
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
@@ -904,7 +921,7 @@ def pagamentos_detalhe(oid):
 @app.route("/relatorios")
 def relatorios_index():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    # >>> ALTERADO: agora sugere HOJE, não ontem
+    # Sugere HOJE
     existing = []
     default_day = date.today().isoformat()
     return render_template("relatorios.html", existing=existing, default_day=default_day)
@@ -912,17 +929,21 @@ def relatorios_index():
 @app.route("/relatorios/diario.xlsx")
 def relatorio_diario_xlsx():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    # >>> ALTERADO: permite gerar para HOJE (sem esperar 24h)
     day = request.args.get("date") or date.today().isoformat()
-    xbytes = build_excel_bytes_for_day(day)
-    return send_file(io.BytesIO(xbytes),
-                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                     as_attachment=True, download_name=f"pagamentos_{day}.xlsx")
+    try:
+        xbytes = build_excel_bytes_for_day(day)
+        return send_file(io.BytesIO(xbytes),
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         as_attachment=True, download_name=f"pagamentos_{day}.xlsx")
+    except Exception as e:
+        # Falha ao gerar XLSX (geralmente por falta de openpyxl) -> fallback para CSV do mesmo dia
+        print(f"[RELATORIO] Falha ao gerar XLSX: {e}", flush=True)
+        flash("Excel indisponível no momento. Baixando em CSV.", "warning")
+        return redirect(url_for("relatorio_diario_csv", date=day))
 
 @app.route("/relatorios/diario.csv")
 def relatorio_diario_csv():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    # >>> ALTERADO: também aceita data escolhida e permite hoje
     day = request.args.get("date") or date.today().isoformat()
     rows = db_all("""
         SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
@@ -962,10 +983,8 @@ def admin_orders_delete(oid):
 try:
     init_db()
 except Exception as e:
-    # Log em stdout para aparecer nos logs do Render
     print(f"[BOOT] init_db() falhou: {e}", flush=True)
 
 # Execução local (opcional)
 if __name__ == "__main__":
-    # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db) antes de executar
     app.run(host="0.0.0.0", port=5000, debug=True)
