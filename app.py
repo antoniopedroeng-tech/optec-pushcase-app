@@ -191,7 +191,7 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
         from openpyxl.utils import get_column_letter
         from openpyxl.styles import Font
     except ImportError as e:
-        # Sem openpyxl, vamos sinalizar com uma exceção para a rota decidir o fallback
+        # Sem openpyxl, a rota chamadora decide fallback para CSV
         raise RuntimeError("openpyxl não está instalado") from e
 
     wb = Workbook()
@@ -225,12 +225,9 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
     # Linha de TOTAL
     ws.append(["", "", "", "", "", ""])
     ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
-    # Bold total
-    from openpyxl.styles import Font  # seguro aqui
     ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
     ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
 
-    from openpyxl.utils import get_column_letter
     for i, w in enumerate([18, 28, 12, 26, 12, 14], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -291,11 +288,40 @@ def admin_users_create():
 
 @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
 def admin_users_delete(uid):
-    if require_role("admin"): return require_role("admin")
+    if require_role("admin"):
+        return require_role("admin")
+
+    # não permitir excluir a si mesmo
     if uid == session.get("user_id"):
-        flash("Não é possível excluir o próprio usuário logado.", "error"); return redirect(url_for("admin_users"))
-    db_exec("DELETE FROM users WHERE id=:id", id=uid)
-    audit("user_delete", f"id={uid}"); flash("Usuário removido.", "info"); return redirect(url_for("admin_users"))
+        flash("Não é possível excluir o próprio usuário logado.", "error")
+        return redirect(url_for("admin_users"))
+
+    # checar referências (pedidos, pagamentos, auditoria)
+    refs = {
+        "pedidos": db_one("SELECT 1 FROM purchase_orders WHERE buyer_id=:id LIMIT 1", id=uid),
+        "pagamentos": db_one("SELECT 1 FROM payments WHERE payer_id=:id LIMIT 1", id=uid),
+        "auditoria": db_one("SELECT 1 FROM audit_log WHERE user_id=:id LIMIT 1", id=uid),
+    }
+    if any(refs.values()):
+        detalhes = []
+        if refs["pedidos"]: detalhes.append("pedidos vinculados")
+        if refs["pagamentos"]: detalhes.append("pagamentos vinculados")
+        if refs["auditoria"]: detalhes.append("registros de auditoria")
+        flash(
+            "Não é possível excluir este usuário: há " + ", ".join(detalhes) +
+            ". Você pode manter o histórico e apenas mudar o papel/credenciais.",
+            "error"
+        )
+        return redirect(url_for("admin_users"))
+
+    # sem vínculos: pode excluir
+    try:
+        db_exec("DELETE FROM users WHERE id=:id", id=uid)
+        audit("user_delete", f"id={uid}")
+        flash("Usuário removido.", "success")
+    except Exception as e:
+        flash(f"Falha ao excluir usuário (restrições de integridade?): {e}", "error")
+    return redirect(url_for("admin_users"))
 
 # -------- Admin: Fornecedores --------
 
