@@ -350,8 +350,10 @@ def admin_products_create():
     if kind not in ("lente","bloco") or not name:
         flash("Dados inválidos.", "error"); return redirect(url_for("admin_products"))
     try:
-        db_exec("INSERT INTO products (name, code, kind, active, in_stock) VALUES (:n,:c,:k,1,:is)",
-                n=name, c=code, k=kind, is=in_stock)
+        db_exec("INSERT INTO products (name, code, kind, in_stock, active) "
+    "VALUES (:n,:c,:k,:instock,1)",
+    n=name, c=code, k=kind, instock=in_stock)
+
         audit("product_create", f"{name}/{kind}/in_stock={in_stock}"); flash("Produto criado.", "success")
     except Exception:
         flash("Produto já existe para este tipo.", "error")
