@@ -1,0 +1,4 @@
+cd "C:\Users\toinh\Downloads\sistema de pedidos\optic_purchase_app_menu_fixed\optic_purchase_app_render2"
+git add -A
+git commit -m "fix: ajustes na tela de Novo Pedido (checkboxes alinhadas, busca por código, normalização do cilíndrico)"
+git push

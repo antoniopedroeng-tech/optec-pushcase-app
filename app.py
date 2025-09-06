@@ -669,6 +669,10 @@ def compras_novo():
     """)
     products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
 
+    # >>> Conversão para JSON-serializável (evita erro 500 no template) <<<
+    combos = [dict(r) for r in combos]
+    products = [dict(p) for p in products]
+
     if request.method == "POST":
         os_number = (request.form.get("os_number") or "").strip()
         pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
