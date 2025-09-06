@@ -350,10 +350,11 @@ def admin_products_create():
     if kind not in ("lente","bloco") or not name:
         flash("Dados inválidos.", "error"); return redirect(url_for("admin_products"))
     try:
-        db_exec("INSERT INTO products (name, code, kind, in_stock, active) "
-    "VALUES (:n,:c,:k,:instock,1)",
-    n=name, c=code, k=kind, instock=in_stock)
-
+        db_exec(
+            "INSERT INTO products (name, code, kind, in_stock, active) "
+            "VALUES (:n,:c,:k,:instock,1)",
+            n=name, c=code, k=kind, instock=in_stock
+        )
         audit("product_create", f"{name}/{kind}/in_stock={in_stock}"); flash("Produto criado.", "success")
     except Exception:
         flash("Produto já existe para este tipo.", "error")
@@ -543,10 +544,10 @@ def admin_import():
                                 in_stock = int(row[i_stock]) if (i_stock != -1 and row[i_stock] is not None) else 0
                                 res = conn.execute(text("""
                                     INSERT INTO products (name, code, kind, active, in_stock)
-                                    VALUES (:n, :c, :k, :a, :is)
+                                    VALUES (:n, :c, :k, :a, :instock)
                                     ON CONFLICT (name, kind) DO UPDATE SET code=EXCLUDED.code, active=EXCLUDED.active, in_stock=EXCLUDED.in_stock
                                     RETURNING (xmax = 0) AS inserted
-                                """), dict(n=name, c=code, k=kind, a=active, is=in_stock))
+                                """), dict(n=name, c=code, k=kind, a=active, instock=in_stock))
                                 inserted = res.fetchone()[0]
                                 if inserted: report["products"]["inserted"] += 1
                                 else: report["products"]["updated"] += 1
