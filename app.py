@@ -103,7 +103,7 @@ def ensure_minimum_data():
         db.session.commit()
 
 
-# >>>>>>>>>>>> CORREÇÃO PARA FLASK 3.x (SEM before_first_request) <<<<<<<<<<<<<<
+# >>>>>>>>>>>> FLASK 3.x (sem before_first_request) <<<<<<<<<<<<<<
 # Executa migração/seed uma única vez ao subir o app
 with app.app_context():
     ensure_minimum_data()
@@ -234,6 +234,7 @@ def comprador_remover(pedido_id):
 @app.route("/pagador", methods=["GET"])
 @require_role("pagador")
 def pagador():
+    # Lista em aberto agrupado por fornecedor
     pendentes = Pedido.query.filter_by(pago=False).order_by(Pedido.fornecedor_id.asc(), Pedido.id.desc()).all()
     grupos = defaultdict(list)
     total_por_forn = defaultdict(float)
@@ -241,7 +242,13 @@ def pagador():
         grupos[p.fornecedor.nome].append(p)
         total_por_forn[p.fornecedor.nome] += (p.valor or 0.0)
     total_geral = sum(total_por_forn.values())
-    return render_template_string(TEMPLATE_PAGADOR, grupos=grupos, total_por_forn=total_por_forn, total_geral=total_geral)
+    return render_template_string(
+        TEMPLATE_PAGADOR,
+        grupos=grupos,
+        total_por_forn=total_por_forn,
+        total_geral=total_geral,
+        date=date  # para usar date.today() no template
+    )
 
 
 @app.route("/pagador/pagar/<int:pedido_id>", methods=["POST"])
@@ -275,6 +282,7 @@ def pagador_pagar(pedido_id):
 # -----------------------------------------------------------------------------
 @app.route("/relatorio", methods=["GET"])
 def relatorio():
+    # Acesso: comprador ou pagador
     if session.get("role") not in ("comprador", "pagador"):
         flash("Faça login para ver relatórios.", "warning")
         return redirect(url_for("index"))
@@ -304,6 +312,7 @@ def relatorio():
 
 @app.route("/relatorio/csv", methods=["GET"])
 def relatorio_csv():
+    # Protegido
     if session.get("role") not in ("comprador", "pagador"):
         flash("Faça login para exportar relatórios.", "warning")
         return redirect(url_for("index"))
@@ -346,7 +355,7 @@ def relatorio_csv():
 
 
 # -----------------------------------------------------------------------------
-# APIs simples
+# APIs simples (para integrações futuras)
 # -----------------------------------------------------------------------------
 @app.route("/api/pedidos", methods=["GET"])
 def api_pedidos():
@@ -457,9 +466,7 @@ BASE_HEAD = """
 </body></html>
 """
 
-TEMPLATE_INDEX = """
-{% extends none %}
-""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+TEMPLATE_INDEX = BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
 {% block conteudo %}
   <div class="p-4 bg-light rounded">
     <h1 class="h3 mb-3">Bem-vindo</h1>
@@ -480,9 +487,7 @@ TEMPLATE_INDEX = """
 {% endblock %}
 """)
 
-TEMPLATE_LOGIN = """
-{% extends none %}
-""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+TEMPLATE_LOGIN = BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
 {% block conteudo %}
   <div class="row justify-content-center">
     <div class="col-md-5">
@@ -510,9 +515,7 @@ TEMPLATE_LOGIN = """
 {% endblock %}
 """)
 
-TEMPLATE_COMPRADOR = """
-{% extends none %}
-""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+TEMPLATE_COMPRADOR = BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
 {% block conteudo %}
   <div class="row g-3">
     <div class="col-lg-5">
@@ -623,9 +626,7 @@ TEMPLATE_COMPRADOR = """
 {% endblock %}
 """)
 
-TEMPLATE_PAGADOR = """
-{% extends none %}
-""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+TEMPLATE_PAGADOR = BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
 {% block conteudo %}
   <div class="card shadow-sm">
     <div class="card-body">
@@ -693,9 +694,7 @@ TEMPLATE_PAGADOR = """
 {% endblock %}
 """)
 
-TEMPLATE_RELATORIO = """
-{% extends none %}
-""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+TEMPLATE_RELATORIO = BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
 {% block conteudo %}
   <div class="card shadow-sm">
     <div class="card-body">
