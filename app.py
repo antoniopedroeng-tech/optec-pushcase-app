@@ -63,7 +63,7 @@ class Pedido(db.Model):
     forma_pagamento = db.Column(db.String(30), nullable=True)   # PIX, TED, Boleto etc.
     comprovante = db.Column(db.String(200), nullable=True)      # opcional: referência/ID
 
-    # Evita duplicidade de OS no cadastro (por padrão única por OS; ajuste se quiser por dia/fornecedor).
+    # Evita duplicidade de OS (por padrão única por OS; ajuste se quiser por dia/fornecedor).
     __table_args__ = (
         UniqueConstraint("ordem_servico", name="uq_pedidos_os"),
     )
@@ -76,7 +76,8 @@ class Pedido(db.Model):
 # Utilitários/Migrações leves
 # -----------------------------------------------------------------------------
 def ensure_minimum_data():
-    """Cria DB e alguns fornecedores iniciais se não existirem."""
+    """Cria DB e alguns fornecedores iniciais se não existirem.
+       Também faz migração leve de colunas faltantes no Postgres/SQLite."""
     db.create_all()
 
     # Migração leve: garantir colunas (caso DB antigo)
@@ -94,10 +95,7 @@ def ensure_minimum_data():
     if missing:
         with db.engine.begin() as conn:
             for alter in missing:
-                if db.engine.url.get_backend_name().startswith("sqlite"):
-                    conn.execute(text(f"ALTER TABLE pedidos {alter}"))
-                else:
-                    conn.execute(text(f"ALTER TABLE pedidos {alter}"))
+                conn.execute(text(f"ALTER TABLE pedidos {alter}"))
 
     if Fornecedor.query.count() == 0:
         for nome in ["Essilor", "Zeiss", "Hoya", "Saturn", "Transitions", "Outros"]:
@@ -105,8 +103,9 @@ def ensure_minimum_data():
         db.session.commit()
 
 
-@app.before_first_request
-def init_app():
+# >>>>>>>>>>>> CORREÇÃO PARA FLASK 3.x (SEM before_first_request) <<<<<<<<<<<<<<
+# Executa migração/seed uma única vez ao subir o app
+with app.app_context():
     ensure_minimum_data()
 
 
@@ -117,7 +116,6 @@ def require_role(role):
                 flash("Acesso negado para este perfil.", "danger")
                 return redirect(url_for("index"))
             return fn(*args, **kwargs)
-        # Preserva nome para debug
         inner.__name__ = fn.__name__
         return inner
     return wrapper
@@ -236,7 +234,6 @@ def comprador_remover(pedido_id):
 @app.route("/pagador", methods=["GET"])
 @require_role("pagador")
 def pagador():
-    # Lista em aberto agrupado por fornecedor
     pendentes = Pedido.query.filter_by(pago=False).order_by(Pedido.fornecedor_id.asc(), Pedido.id.desc()).all()
     grupos = defaultdict(list)
     total_por_forn = defaultdict(float)
@@ -278,7 +275,6 @@ def pagador_pagar(pedido_id):
 # -----------------------------------------------------------------------------
 @app.route("/relatorio", methods=["GET"])
 def relatorio():
-    # Acesso: comprador ou pagador
     if session.get("role") not in ("comprador", "pagador"):
         flash("Faça login para ver relatórios.", "warning")
         return redirect(url_for("index"))
@@ -308,7 +304,6 @@ def relatorio():
 
 @app.route("/relatorio/csv", methods=["GET"])
 def relatorio_csv():
-    # Protegido
     if session.get("role") not in ("comprador", "pagador"):
         flash("Faça login para exportar relatórios.", "warning")
         return redirect(url_for("index"))
@@ -351,7 +346,7 @@ def relatorio_csv():
 
 
 # -----------------------------------------------------------------------------
-# APIs simples (para integrações futuras)
+# APIs simples
 # -----------------------------------------------------------------------------
 @app.route("/api/pedidos", methods=["GET"])
 def api_pedidos():
@@ -397,7 +392,7 @@ def serialize_pedido(p: Pedido):
 
 
 # -----------------------------------------------------------------------------
-# Templates (Jinja inline para 1 arquivo)
+# Templates (Jinja inline)
 # -----------------------------------------------------------------------------
 BASE_HEAD = """
 <!doctype html>
