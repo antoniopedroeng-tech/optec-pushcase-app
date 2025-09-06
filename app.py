@@ -11,7 +11,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 DATABASE_URL = os.environ.get("DATABASE_URL")  # fornecido pelo Render Postgres
 TIMEZONE_TZ = os.environ.get("TZ", "America/Fortaleza")
 
-# ========= SQLAlchemy =========
+# SQLAlchemy Engine / Session
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
@@ -21,6 +21,7 @@ app.secret_key = SECRET_KEY
 # ============================ DB INIT ============================
 
 def init_db():
+    # Cria tabelas no Postgres (sem Alembic por enquanto)
     ddl = """
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -108,11 +109,14 @@ def init_db():
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
+
+        # garantir coluna in_stock para bases antigas
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
             pass
 
+        # cria admin default se não existir
         exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
         if exists == 0:
             from werkzeug.security import generate_password_hash
@@ -121,8 +125,7 @@ def init_db():
                 dict(u="admin", p=generate_password_hash("admin123"), r="admin", c=datetime.utcnow())
             )
 
-# ============================ HELPERS ============================
-
+# Helpers comuns
 def db_all(sql, **params):
     with engine.connect() as conn:
         return conn.execute(text(sql), params).mappings().all()
@@ -140,11 +143,14 @@ def audit(action, details=""):
     db_exec("INSERT INTO audit_log (user_id, action, details, created_at) VALUES (:uid,:a,:d,:c)",
             uid=(u["id"] if u else None), a=action, d=details, c=datetime.utcnow())
 
+# ============================ AUTH/CTX ============================
+
 def current_user():
     uid = session.get("user_id")
     if not uid:
         return None
-    return db_one("SELECT * FROM users WHERE id=:id", id=uid)
+    u = db_one("SELECT * FROM users WHERE id=:id", id=uid)
+    return u
 
 def require_role(*roles):
     u = current_user()
@@ -156,39 +162,13 @@ def require_role(*roles):
 def inject_globals():
     return {"now": datetime.utcnow(), "role": session.get("role"), "user": current_user(), "app_name": APP_NAME}
 
-def _serialize_combos(rows):
-    """Converte para tipos nativos (evita Decimal no tojson)."""
-    out = []
-    for r in rows:
-        out.append({
-            "rule_id": int(r["rule_id"]),
-            "product_id": int(r["product_id"]),
-            "product_name": str(r["product_name"]),
-            "kind": str(r["kind"]),
-            "supplier_id": int(r["supplier_id"]),
-            "supplier_name": str(r["supplier_name"]),
-            "max_price": float(r["max_price"]),
-        })
-    return out
-
-def _ensure_cart():
-    if "cart" not in session:
-        session["cart"] = []  # cada item: dict(product_id, product_name, kind, supplier_id, supplier_name, price, os_number, sphere,cylinder,base,addition)
-    return session["cart"]
-
-def _fmt_dioptria(item):
-    if item.get("kind") == "lente":
-        esf = item.get("sphere")
-        cil = item.get("cylinder")
-        return f"Esf {esf:+.2f} / Cil {cil:+.2f}"
-    else:
-        base = item.get("base")
-        add = item.get("addition")
-        return f"Base {base:.2f} / Adição +{add:.2f}"
-
-# ============================ RELATÓRIOS ============================
+# ============================ RELATÓRIOS (Excel in-memory) ============================
 
 def build_excel_bytes_for_day(day_str: str) -> bytes:
+    """
+    Gera o Excel em memória (sem salvar em disco) para o dia (YYYY-MM-DD).
+    Colunas: Fornecedor, Produto, Estoque, Dioptria, Data, Valor; e linha TOTAL no final.
+    """
     rows = db_all("""
         SELECT
             s.name  AS fornecedor,
@@ -238,6 +218,7 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
             float(f"{subtotal:.2f}")
         ])
 
+    # Linha de TOTAL
     ws.append(["", "", "", "", "", ""])
     ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
     ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
@@ -370,7 +351,8 @@ def admin_products_create():
         flash("Dados inválidos.", "error"); return redirect(url_for("admin_products"))
     try:
         db_exec(
-            "INSERT INTO products (name, code, kind, in_stock, active) VALUES (:n,:c,:k,:instock,1)",
+            "INSERT INTO products (name, code, kind, in_stock, active) "
+            "VALUES (:n,:c,:k,:instock,1)",
             n=name, c=code, k=kind, instock=in_stock
         )
         audit("product_create", f"{name}/{kind}/in_stock={in_stock}"); flash("Produto criado.", "success")
@@ -447,6 +429,7 @@ def admin_rules_toggle(rid):
 
 @app.route("/admin/import/template.xlsx")
 def admin_import_template():
+    # Gera o template Excel em memória e envia
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -633,6 +616,7 @@ def admin_import():
                 report["errors"].append(str(e))
                 flash("Falha na importação. Veja os erros.", "error")
 
+    # Página simples inline (sem depender de arquivo .html)
     html = """
     {% extends "base.html" %}
     {% block title %}Importação em Massa{% endblock %}
@@ -667,14 +651,15 @@ def admin_import():
     """
     return render_template_string(html, report=report)
 
-# -------- Comprador: Novo Pedido (lista + enviar/limpar) --------
+# -------- Comprador: Novo Pedido (com lista temporária, código do produto, cilíndrico negativo) --------
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
-    if require_role("comprador","admin"): return require_role("comprador","admin")
+    if require_role("comprador","admin"):
+        return require_role("comprador","admin")
 
     combos = db_all("""
-        SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.kind,
+        SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.code as product_code, p.kind,
                s.id as supplier_id, s.name as supplier_name, r.max_price
         FROM rules r
         JOIN products p ON p.id = r.product_id
@@ -682,87 +667,14 @@ def compras_novo():
         WHERE r.active=1 AND p.active=1 AND s.active=1
         ORDER BY s.name, p.kind, p.name
     """)
-    combos_json = _serialize_combos(combos)
-    products = db_all("SELECT * FROM products WHERE active=1 ORDER BY kind, name")
+    products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
 
-    cart = _ensure_cart()
-    action = request.form.get("action") if request.method == "POST" else None
-
-    def validate_lente(prefix):
-        sphere = request.form.get(f"{prefix}_sphere", type=float)
-        cylinder = request.form.get(f"{prefix}_cylinder", type=float)
-        if sphere is None or sphere < -20 or sphere > 20 or (abs(sphere*100) % 25 != 0):
-            return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
-        if cylinder is None or cylinder > 0 or cylinder < -15 or (abs(cylinder*100) % 25 != 0):
-            return None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
-        return {"sphere": sphere, "cylinder": cylinder, "base": None, "addition": None}, None
-
-    def validate_bloco(prefix):
-        base = request.form.get(f"{prefix}_base", type=float)
-        addition = request.form.get(f"{prefix}_addition", type=float)
-        allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
-        if base is None or base not in allowed_bases:
-            return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
-        if addition is None or addition < 1.0 or addition > 4.0 or (abs(addition*100) % 25 != 0):
-            return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
-        return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
-
-    # ---- Remover linha específica do carrinho ----
-    if action == "remove":
-        idx = request.form.get("idx", type=int)
-        if idx is not None and 0 <= idx < len(cart):
-            removed = cart.pop(idx)
-            session.modified = True
-            flash(f"Linha removida (OS {removed.get('os_number', '-')}).", "info")
-        return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
-
-    # ---- Limpar lista inteira ----
-    if action == "clear":
-        session["cart"] = []
-        flash("Lista de itens limpa.", "info")
-        return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=_ensure_cart())
-
-    # ---- Enviar ao pagador (cria pedidos agrupados por fornecedor) ----
-    if action == "submit":
-        if not cart:
-            flash("A lista está vazia.", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
-
-        # Agrupar por fornecedor
-        by_supplier = {}
-        for it in cart:
-            sid = it["supplier_id"]
-            by_supplier.setdefault(sid, []).append(it)
-
-        with engine.begin() as conn:
-            for sid, items in by_supplier.items():
-                total = sum(float(x["price"]) for x in items)
-                os_list = sorted(set(x["os_number"] for x in items))
-                note = "OS " + ", ".join(os_list)
-                order_id = conn.execute(text("""
-                    INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-                    VALUES (:b,:s,'PENDENTE_PAGAMENTO',:t,:n,:c,:u) RETURNING id
-                """), dict(b=session["user_id"], s=sid, t=total, n=note, c=datetime.utcnow(), u=datetime.utcnow())).scalar_one()
-
-                for x in items:
-                    conn.execute(text("""
-                        INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                        VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
-                    """), dict(o=order_id, p=x["product_id"], pr=x["price"],
-                               sf=x.get("sphere"), cl=x.get("cylinder"),
-                               ba=x.get("base"), ad=x.get("addition"),
-                               os=x["os_number"]))
-        audit("orders_create_from_cart", f"groups={len(by_supplier)} items={len(cart)}")
-        session["cart"] = []
-        flash("Pedido(s) criado(s) e enviado(s) ao pagador.", "success")
-        return redirect(url_for("compras_lista"))
-
-    # ---- Adicionar item(ens) na lista ----
-    if action == "add":
+    if request.method == "POST":
         os_number = (request.form.get("os_number") or "").strip()
-        pair_option = request.form.get("pair_option")  # 'meio' | 'par'
-        tipo = (request.form.get("tipo") or "").lower()  # 'lente' | 'bloco'
+        pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
+        tipo = (request.form.get("tipo") or "").lower()  # 'lente' ou 'bloco'
         product_id = request.form.get("product_id", type=int)
+        product_code = (request.form.get("product_code") or "").strip()
         supplier_main = request.form.get("supplier_main", type=int)
         price_main = request.form.get("price_main", type=float)
 
@@ -772,118 +684,138 @@ def compras_novo():
 
         if not os_number:
             flash("Informe o número da OS.", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
+        existing_n = int(existing["n"] if existing else 0)
+
         if pair_option not in ("meio","par"):
             flash("Selecione se é meio par ou um par.", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            return render_template("compras_novo.html", combos=combos, products=products)
+
         if tipo not in ("lente","bloco"):
             flash("Selecione o tipo (lente/bloco).", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
-        if not product_id:
-            flash("Selecione o produto.", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Regras/fornecedor para item principal
+        # Se não veio product_id, tenta resolver por código e tipo
+        if not product_id and product_code:
+            p = db_one("SELECT id FROM products WHERE code=:c AND kind=:k AND active=1", c=product_code, k=tipo)
+            if p:
+                product_id = int(p["id"])
+
+        if not product_id:
+            flash("Selecione o produto (ou informe um código válido).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        # Validação de fornecedor/regra D1
         rule_main = db_one("""
-            SELECT r.*, p.kind as product_kind, p.name as product_name, s.name as supplier_name
-            FROM rules r
-            JOIN products p ON p.id = r.product_id
-            JOIN suppliers s ON s.id = r.supplier_id
+            SELECT r.*, p.kind as product_kind
+            FROM rules r JOIN products p ON p.id = r.product_id
             WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
         """, pid=product_id, sid=supplier_main)
         if not rule_main:
             flash("Fornecedor principal indisponível para este produto.", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            return render_template("compras_novo.html", combos=combos, products=products)
         if price_main is None or price_main <= 0 or price_main > float(rule_main["max_price"]) + 1e-6:
             flash(f"Preço do item principal inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Dioptrias do item 1
+        # Utilitários de validação
+        def _step_ok(x: float) -> bool:
+            return (abs(x * 100) % 25) == 0  # múltiplos de 0,25
+
+        def validate_lente(prefix):
+            sphere = request.form.get(f"{prefix}_sphere", type=float)
+            cylinder_raw = request.form.get(f"{prefix}_cylinder", type=float)
+            # normaliza para negativo
+            cylinder = None
+            if cylinder_raw is not None:
+                cylinder = -abs(cylinder_raw)
+            if sphere is None or sphere < -20 or sphere > 20 or not _step_ok(sphere):
+                return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
+            if cylinder is None or cylinder > 0 or cylinder < -15 or not _step_ok(cylinder):
+                return None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
+            return {"sphere": sphere, "cylinder": cylinder, "base": None, "addition": None}, None
+
+        def validate_bloco(prefix):
+            base = request.form.get(f"{prefix}_base", type=float)
+            addition = request.form.get(f"{prefix}_addition", type=float)
+            allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
+            if base is None or base not in allowed_bases:
+                return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
+            if addition is None or addition < 1.0 or addition > 4.0 or not _step_ok(addition):
+                return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
+            return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
+
+        items_to_add = []
+
+        # Item D1
         if tipo == "lente":
             d1, err = validate_lente("d1")
+            if err:
+                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
         else:
             d1, err = validate_bloco("d1")
-        if err:
-            flash(err, "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            if err:
+                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+        items_to_add.append({"product_id": product_id, "supplier_id": supplier_main, "price": price_main, "d": d1})
 
-        items_to_add = [{
-            "os_number": os_number,
-            "product_id": int(product_id),
-            "product_name": rule_main["product_name"],
-            "kind": tipo,
-            "supplier_id": int(supplier_main),
-            "supplier_name": rule_main["supplier_name"],
-            "price": float(price_main),
-            "sphere": d1["sphere"], "cylinder": d1["cylinder"],
-            "base": d1["base"], "addition": d1["addition"],
-        }]
-
-        # Segundo item (se for par)
+        # Item D2 se “par”
         if pair_option == "par":
             if supplier_distinto:
                 if not supplier_second:
-                    flash("Selecione o fornecedor do segundo item.", "error")
-                    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+                    flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
                 rule_second = db_one("""
-                    SELECT r.*, p.kind as product_kind, p.name as product_name, s.name as supplier_name
-                    FROM rules r
-                    JOIN products p ON p.id = r.product_id
-                    JOIN suppliers s ON s.id = r.supplier_id
+                    SELECT r.*, p.kind as product_kind
+                    FROM rules r JOIN products p ON p.id = r.product_id
                     WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
                 """, pid=product_id, sid=supplier_second)
                 if not rule_second:
-                    flash("Fornecedor do segundo item indisponível para este produto.", "error")
-                    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+                    flash("Fornecedor do segundo item indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
                 if price_second is None or price_second <= 0 or price_second > float(rule_second["max_price"]) + 1e-6:
-                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error")
-                    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
-                supplier2_id = int(supplier_second)
-                supplier2_name = rule_second["supplier_name"]
-                price2 = float(price_second)
+                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products)
             else:
-                supplier2_id = int(supplier_main)
-                supplier2_name = rule_main["supplier_name"]
-                price2 = float(price_main)
+                supplier_second, price_second = supplier_main, price_main
 
             if tipo == "lente":
                 d2, err = validate_lente("d2")
+                if err:
+                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
             else:
                 d2, err = validate_bloco("d2")
-            if err:
-                flash(err, "error")
-                return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+                if err:
+                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
 
-            items_to_add.append({
-                "os_number": os_number,
-                "product_id": int(product_id),
-                "product_name": rule_main["product_name"],
-                "kind": tipo,
-                "supplier_id": supplier2_id,
-                "supplier_name": supplier2_name,
-                "price": price2,
-                "sphere": d2["sphere"], "cylinder": d2["cylinder"],
-                "base": d2["base"], "addition": d2["addition"],
-            })
+            items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": d2})
 
-        # Regra: por OS só pode até 2 itens (um par). Considerar DB + carrinho + novos
-        existing_db = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
-        existing_db_n = int(existing_db["n"] if existing_db else 0)
-        cart_n = sum(1 for x in cart if x.get("os_number") == os_number)
-        if existing_db_n + cart_n + len(items_to_add) > 2:
+        # Limite de 2 por OS
+        if existing_n + len(items_to_add) > 2:
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
-            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+            return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Adicionar ao carrinho
-        cart.extend(items_to_add)
-        session.modified = True
-        flash(f"{len(items_to_add)} linha(s) adicionada(s) à lista (OS {os_number}).", "success")
-        return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+        # Criação do pedido (cabeçalho usa fornecedor do 1º item)
+        total = sum([it["price"] for it in items_to_add])
+        with engine.begin() as conn:
+            res = conn.execute(text("""
+                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+                VALUES (:b,:s,'PENDENTE_PAGAMENTO',:t,:n,:c,:u) RETURNING id
+            """), dict(b=session["user_id"], s=items_to_add[0]["supplier_id"], t=total,
+                       n=f"OS {os_number} ({pair_option})", c=datetime.utcnow(), u=datetime.utcnow()))
+            order_id = res.scalar_one()
+            for it in items_to_add:
+                conn.execute(text("""
+                    INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                    VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
+                """), dict(o=order_id, p=it["product_id"], pr=it["price"],
+                           sf=it["d"]["sphere"], cl=it["d"]["cylinder"], ba=it["d"]["base"],
+                           ad=it["d"]["addition"], os=os_number))
+        audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)}")
+        flash("Pedido criado e enviado ao pagador.", "success")
+        return redirect(url_for("compras_lista"))
 
-    # GET inicial
-    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+    return render_template("compras_novo.html", combos=combos, products=products)
 
-# -------- Comprador: Lista/Detalhe --------
+# -------- Comprador: lista/detalhe --------
 
 @app.route("/compras")
 def compras_lista():
@@ -969,7 +901,7 @@ def pagamentos_detalhe(oid):
 def relatorios_index():
     if require_role("admin","pagador"): return require_role("admin","pagador")
     ontem = (date.today() - timedelta(days=1)).isoformat()
-    existing = []
+    existing = []  # sem disco: não listamos arquivos, mas mostramos a data padrão (ontem)
     default_day = ontem
     return render_template("relatorios.html", existing=existing, default_day=default_day)
 
@@ -1023,11 +955,14 @@ def admin_orders_delete(oid):
 
 # ============================ BOOTSTRAP ============================
 
+# Inicializa o banco na importação do app (compatível com Flask 3 + Gunicorn)
 try:
     init_db()
 except Exception as e:
+    # Log em stdout para aparecer nos logs do Render
     print(f"[BOOT] init_db() falhou: {e}", flush=True)
 
+# Execução local (opcional)
 if __name__ == "__main__":
-    # Para rodar local, defina: set DATABASE_URL=postgresql+psycopg2://user:pass@host/db
+    # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db) antes de executar
     app.run(host="0.0.0.0", port=5000, debug=True)
