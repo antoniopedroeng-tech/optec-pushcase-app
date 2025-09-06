@@ -904,18 +904,16 @@ def pagamentos_detalhe(oid):
 @app.route("/relatorios")
 def relatorios_index():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    ontem = (date.today() - timedelta(days=1)).isoformat()
-    existing = []  # sem disco: não listamos arquivos, mas mostramos a data padrão (ontem)
-    default_day = ontem
+    # >>> ALTERADO: agora sugere HOJE, não ontem
+    existing = []
+    default_day = date.today().isoformat()
     return render_template("relatorios.html", existing=existing, default_day=default_day)
 
 @app.route("/relatorios/diario.xlsx")
 def relatorio_diario_xlsx():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    day = request.args.get("date") or (date.today() - timedelta(days=1)).isoformat()
-    if day >= date.today().isoformat():
-        flash("O relatório de hoje ficará disponível apenas amanhã (após 24h).", "info")
-        return redirect(url_for("relatorios_index"))
+    # >>> ALTERADO: permite gerar para HOJE (sem esperar 24h)
+    day = request.args.get("date") or date.today().isoformat()
     xbytes = build_excel_bytes_for_day(day)
     return send_file(io.BytesIO(xbytes),
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -924,7 +922,8 @@ def relatorio_diario_xlsx():
 @app.route("/relatorios/diario.csv")
 def relatorio_diario_csv():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    target_day = (date.today() - timedelta(days=1)).isoformat()
+    # >>> ALTERADO: também aceita data escolhida e permite hoje
+    day = request.args.get("date") or date.today().isoformat()
     rows = db_all("""
         SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
                o.id as order_id, s.name as supplier_name, u.username as payer_name
@@ -934,7 +933,7 @@ def relatorio_diario_csv():
         JOIN users u ON u.id = pay.payer_id
         WHERE DATE(pay.paid_at)=:day
         ORDER BY pay.paid_at ASC
-    """, day=target_day)
+    """, day=day)
     output = io.StringIO(); writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["paid_at","amount","method","reference","order_id","supplier","payer"])
     for r in rows:
@@ -942,7 +941,7 @@ def relatorio_diario_csv():
         writer.writerow([paid_at, f"{float(r['amount']):.2f}", r["method"], r["reference"], r["order_id"], r["supplier_name"], r["payer_name"]])
     output.seek(0)
     return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
-                     as_attachment=True, download_name=f"pagamentos_{target_day}.csv")
+                     as_attachment=True, download_name=f"pagamentos_{day}.csv")
 
 # -------- Admin: excluir pedidos --------
 

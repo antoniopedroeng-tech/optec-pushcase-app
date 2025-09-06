@@ -13,6 +13,7 @@
   table.items th, table.items td { border:1px solid #ddd; padding:6px 8px; font-size: 14px; }
   table.items th { background:#f9f9f9; }
   .muted { color:#666; font-size: 12px; }
+  .max-hint { font-size: 12px; color:#444; margin-top:4px }
 </style>
 
 <h2>Novo Pedido</h2>
@@ -53,14 +54,8 @@
       <div>
         <label>Código do produto</label>
         <input list="codes" name="product_code" id="product_code" class="form-control" placeholder="Ex.: LA167">
-        <datalist id="codes">
-          {% for p in products %}
-            {% if p.code %}
-              <option value="{{p.code}}">{{p.name}} ({{p.kind}})</option>
-            {% endif %}
-          {% endfor %}
-        </datalist>
-        <div class="muted">Digite o código para localizar mais rápido.</div>
+        <datalist id="codes"><!-- opções preenchidas dinamicamente pelo tipo --></datalist>
+        <div class="muted">Digite o código (lista filtrada pelo tipo selecionado).</div>
       </div>
     </div>
 
@@ -73,6 +68,7 @@
             <option value="{{p.id}}" data-code="{{p.code or ''}}" data-kind="{{p.kind}}">{{p.name}} {% if p.code %}— {{p.code}}{% endif %}</option>
           {% endfor %}
         </select>
+        <div class="muted">A lista é filtrada pelo tipo.</div>
       </div>
 
       <div>
@@ -88,11 +84,11 @@
     <div id="lente_fields">
       <div class="form-row">
         <div>
-          <label>Esférico (D1)</label>
+          <label>Esférico (A)</label>
           <input type="number" step="0.25" name="d1_sphere" class="form-control">
         </div>
         <div>
-          <label>Cilíndrico (D1)</label>
+          <label>Cilíndrico (A)</label>
           <input type="number" step="0.25" name="d1_cylinder" class="form-control cil">
           <div class="muted">O sistema sempre normaliza para negativo.</div>
         </div>
@@ -101,11 +97,11 @@
       <div id="lente_d2_wrap" style="display:none">
         <div class="form-row">
           <div>
-            <label>Esférico (D2)</label>
+            <label>Esférico (B)</label>
             <input type="number" step="0.25" name="d2_sphere" class="form-control">
           </div>
           <div>
-            <label>Cilíndrico (D2)</label>
+            <label>Cilíndrico (B)</label>
             <input type="number" step="0.25" name="d2_cylinder" class="form-control cil">
             <div class="muted">O sistema sempre normaliza para negativo.</div>
           </div>
@@ -116,7 +112,7 @@
     <div id="bloco_fields" style="display:none">
       <div class="form-row">
         <div>
-          <label>Base (D1)</label>
+          <label>Base (A)</label>
           <select name="d1_base" class="form-control">
             <option value="">Selecione…</option>
             <option>0.5</option><option>1.0</option><option>2.0</option>
@@ -124,7 +120,7 @@
           </select>
         </div>
         <div>
-          <label>Adição (D1)</label>
+          <label>Adição (A)</label>
           <input type="number" step="0.25" name="d1_addition" class="form-control">
         </div>
       </div>
@@ -132,7 +128,7 @@
       <div id="bloco_d2_wrap" style="display:none">
         <div class="form-row">
           <div>
-            <label>Base (D2)</label>
+            <label>Base (B)</label>
             <select name="d2_base" class="form-control">
               <option value="">Selecione…</option>
               <option>0.5</option><option>1.0</option><option>2.0</option>
@@ -140,7 +136,7 @@
             </select>
           </div>
           <div>
-            <label>Adição (D2)</label>
+            <label>Adição (B)</label>
             <input type="number" step="0.25" name="d2_addition" class="form-control">
           </div>
         </div>
@@ -152,8 +148,9 @@
   <div class="section">
     <div class="form-row">
       <div>
-        <label>Valor (D1)</label>
+        <label>Valor (A)</label>
         <input type="number" step="0.01" name="price_main" id="price_main" class="form-control">
+        <div id="price_main_max" class="max-hint"></div>
       </div>
       <div>
         <label class="form-check-inline">
@@ -166,12 +163,13 @@
     <div id="second_supplier_wrap" style="display:none">
       <div class="form-row">
         <div>
-          <label>Fornecedor (D2)</label>
+          <label>Fornecedor (B)</label>
           <select name="supplier_second" id="supplier_second" class="form-control"></select>
         </div>
         <div>
-          <label>Valor (D2)</label>
+          <label>Valor (B)</label>
           <input type="number" step="0.01" name="price_second" id="price_second" class="form-control">
+          <div id="price_second_max" class="max-hint"></div>
         </div>
       </div>
     </div>
@@ -184,7 +182,7 @@
       <button type="button" id="clear_list" class="btn btn-light">Limpar lista</button>
       <button type="submit" class="btn btn-primary">Enviar ao pagador</button>
     </div>
-    <div class="muted">Cada linha da lista é uma unidade. Para par de lentes, serão 2 linhas (D1 e D2).</div>
+    <div class="muted">Cada linha da lista é uma unidade. Para par de lentes, serão 2 linhas (A e B).</div>
 
     <table class="items" id="items_table" style="display:none">
       <thead>
@@ -213,7 +211,7 @@
 <script>
   // --- dados vindos do backend (regras e produtos) ---
   const combos = {{ combos|tojson }};
-  const products = {{ products|tojson }};
+  const productsAll = {{ products|tojson }};
 
   function suppliersForProduct(pid) {
     const items = combos.filter(c => c.product_id === Number(pid));
@@ -221,20 +219,64 @@
     items.forEach(c => byId.set(c.supplier_id, { id:c.supplier_id, name:c.supplier_name, max:c.max_price }));
     return Array.from(byId.values()).sort((a,b)=> a.name.localeCompare(b.name));
   }
+  function ruleFor(pid, sid) {
+    return combos.find(c => c.product_id === Number(pid) && c.supplier_id === Number(sid));
+  }
 
+  const tipoSel = document.getElementById('tipo');
   const productSelect = document.getElementById('product_id');
   const productCode = document.getElementById('product_code');
-  const tipoSel = document.getElementById('tipo');
+  const codesDatalist = document.getElementById('codes');
   const suppMain = document.getElementById('supplier_main');
   const suppSecond = document.getElementById('supplier_second');
   const supplierDistinto = document.getElementById('supplier_distinto');
   const secondWrap = document.getElementById('second_supplier_wrap');
   const pairRadios = document.querySelectorAll('input[name="pair_option"]');
+  const priceMain = document.getElementById('price_main');
+  const priceSecond = document.getElementById('price_second');
+  const hintMain = document.getElementById('price_main_max');
+  const hintSecond = document.getElementById('price_second_max');
 
+  // ---- FILTRO por TIPO: lista de produtos + datalist de códigos ----
+  function refreshProductsByTipo() {
+    const kind = tipoSel.value;
+    // rebuild select
+    productSelect.innerHTML = '<option value="">Selecione…</option>';
+    productsAll
+      .filter(p => p.kind === kind)
+      .forEach(p => {
+        const o = document.createElement('option');
+        o.value = p.id;
+        o.dataset.code = p.code || '';
+        o.dataset.kind = p.kind;
+        o.textContent = p.name + (p.code ? (' — ' + p.code) : '');
+        productSelect.appendChild(o);
+      });
+    // rebuild datalist
+    codesDatalist.innerHTML = '';
+    productsAll
+      .filter(p => p.kind === kind && (p.code||'').trim() !== '')
+      .forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.code;
+        opt.label = `${p.name} (${p.kind})`;
+        codesDatalist.appendChild(opt);
+      });
+    // limpar fornecedores e dicas
+    suppMain.innerHTML = '';
+    suppSecond.innerHTML = '';
+    hintMain.textContent = '';
+    hintSecond.textContent = '';
+    productCode.value = '';
+  }
+
+  // Preenche fornecedores de acordo com produto
   function refreshSuppliers() {
     const pid = productSelect.value;
     suppMain.innerHTML = '';
     suppSecond.innerHTML = '';
+    hintMain.textContent = '';
+    hintSecond.textContent = '';
     if (!pid) return;
     suppliersForProduct(pid).forEach(s => {
       const o1 = document.createElement('option');
@@ -244,14 +286,36 @@
       o2.value = s.id; o2.textContent = s.name;
       suppSecond.appendChild(o2);
     });
+    updateMaxHints(); // mostra já o max do primeiro fornecedor
+  }
+
+  // Mostrar/atualizar textos de valor máximo
+  function updateMaxHints() {
+    const pid = productSelect.value;
+    const sid1 = suppMain.value;
+    const r1 = (pid && sid1) ? ruleFor(pid, sid1) : null;
+    hintMain.textContent = r1 ? `Máximo (A): R$ ${Number(r1.max_price).toFixed(2)}` : '';
+
+    const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
+    if (isPar && supplierDistinto.checked) {
+      const sid2 = suppSecond.value;
+      const r2 = (pid && sid2) ? ruleFor(pid, sid2) : null;
+      hintSecond.textContent = r2 ? `Máximo (B): R$ ${Number(r2.max_price).toFixed(2)}` : '';
+    } else {
+      hintSecond.textContent = '';
+    }
   }
 
   productSelect.addEventListener('change', () => {
-    const opt = productSelect.selectedOptions[0];
-    if (opt && opt.dataset.kind) {
-      tipoSel.value = opt.dataset.kind;
-    }
     refreshSuppliers();
+  });
+
+  suppMain.addEventListener('change', updateMaxHints);
+  suppSecond && suppSecond.addEventListener('change', updateMaxHints);
+  tipoSel.addEventListener('change', () => {
+    refreshProductsByTipo();
+    syncTipo();
+    syncPairFields();
   });
 
   // Digitar o código -> selecionar produto automático (respeita tipo)
@@ -259,19 +323,20 @@
     const code = productCode.value.trim();
     const kind = tipoSel.value;
     if (!code) return;
-    const match = products.find(p => (p.code || '').toUpperCase() === code.toUpperCase() && p.kind === kind);
+    const match = productsAll.find(p => (p.code || '').toUpperCase() === code.toUpperCase() && p.kind === kind);
     if (match) {
       productSelect.value = String(match.id);
       refreshSuppliers();
     }
   });
 
-  // Mostrar/ocultar D2 e fornecedor D2
+  // Mostrar/ocultar B e fornecedor B
   function syncPairFields() {
     const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
     document.getElementById('lente_d2_wrap').style.display = isPar ? '' : 'none';
     document.getElementById('bloco_d2_wrap').style.display = isPar ? '' : 'none';
     secondWrap.style.display = (isPar && supplierDistinto.checked) ? '' : 'none';
+    updateMaxHints();
   }
   pairRadios.forEach(r => r.addEventListener('change', syncPairFields));
   supplierDistinto.addEventListener('change', syncPairFields);
@@ -282,7 +347,6 @@
     document.getElementById('lente_fields').style.display = (t === 'lente') ? '' : 'none';
     document.getElementById('bloco_fields').style.display = (t === 'bloco') ? '' : 'none';
   }
-  tipoSel.addEventListener('change', syncTipo);
 
   // Normalização: cilíndrico sempre negativo (no navegador)
   function normalizeCylinderInput(el) {
@@ -290,10 +354,20 @@
     const v = parseFloat(el.value.replace(',', '.'));
     if (!isNaN(v)) el.value = (-Math.abs(v)).toFixed(2);
   }
-  document.querySelectorAll('input.cil').forEach(el => {
-    el.addEventListener('blur', () => normalizeCylinderInput(el));
-    el.addEventListener('change', () => normalizeCylinderInput(el));
-  });
+  function bindCylinder() {
+    document.querySelectorAll('input.cil').forEach(el => {
+      el.addEventListener('blur', () => normalizeCylinderInput(el));
+      el.addEventListener('change', () => normalizeCylinderInput(el));
+    });
+  }
+
+  // Impedir SCROLL do mouse alterar inputs numéricos
+  function preventWheelOnNumber() {
+    const nums = document.querySelectorAll('input[type="number"]');
+    nums.forEach(inp => {
+      inp.addEventListener('wheel', e => { e.preventDefault(); inp.blur(); }, { passive:false });
+    });
+  }
 
   // Lista temporária (cliente)
   const table = document.getElementById('items_table');
@@ -341,7 +415,7 @@
     table.style.display = tbody.children.length ? '' : 'none';
   }
 
-  function buildD1() {
+  function buildA() { // (A) mantém names d1_* para compatibilidade backend
     if (tipoSel.value === 'lente') {
       const sph = document.querySelector('input[name="d1_sphere"]').value;
       const cyl = document.querySelector('input[name="d1_cylinder"]').value;
@@ -356,7 +430,7 @@
       };
     }
   }
-  function buildD2() {
+  function buildB() { // (B) mantém names d2_* para compatibilidade backend
     if (tipoSel.value === 'lente') {
       const sph = document.querySelector('input[name="d2_sphere"]').value;
       const cyl = document.querySelector('input[name="d2_cylinder"]').value;
@@ -372,41 +446,61 @@
     }
   }
 
+  // Checar preço contra a regra (produto + fornecedor) ANTES de adicionar
+  function priceExceedsMax(pid, sid, price) {
+    const r = ruleFor(pid, sid);
+    if (!r) return true; // sem regra, considera inválido
+    return Number(price) > Number(r.max_price) + 1e-9;
+  }
+
   document.getElementById('add_to_list').addEventListener('click', () => {
     const os = document.getElementById('os_number').value.trim();
     if (!os) { alert('Informe a OS.'); return; }
     const pid = productSelect.value;
     if (!pid) { alert('Selecione um produto.'); return; }
-    if (!suppMain.value) { alert('Selecione o fornecedor (D1).'); return; }
-    const preco1 = parseFloat(document.getElementById('price_main').value || '0');
-    if (!preco1 || preco1 <= 0) { alert('Informe o valor (D1).'); return; }
+    if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
 
-    // Adiciona D1
+    const preco1 = parseFloat(priceMain.value || '0');
+    if (!preco1 || preco1 <= 0) { alert('Informe o valor (A).'); return; }
+    if (priceExceedsMax(pid, suppMain.value, preco1)) {
+      alert('Valor (A) acima do máximo permitido para este produto/fornecedor.');
+      return;
+    }
+
+    // Adiciona A
     addRow({
       os, tipo: tipoSel.value,
       produto: currentProductName(),
       fornecedor: currentSupplierName(suppMain),
-      d: buildD1(),
+      d: buildA(),
       preco: preco1
     });
 
-    // Se for par
+    // Se for par, checar (B)
     const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
     if (isPar) {
       let fornecedor2 = currentSupplierName(suppMain);
       let preco2 = preco1;
+      let sid2 = suppMain.value;
+
       if (supplierDistinto.checked) {
-        if (!suppSecond.value) { alert('Selecione o fornecedor (D2).'); return; }
+        if (!suppSecond.value) { alert('Selecione o fornecedor (B).'); return; }
         fornecedor2 = currentSupplierName(suppSecond);
-        const p2 = parseFloat(document.getElementById('price_second').value || '0');
-        if (!p2 || p2 <= 0) { alert('Informe o valor (D2).'); return; }
+        sid2 = suppSecond.value;
+        const p2 = parseFloat(priceSecond.value || '0');
+        if (!p2 || p2 <= 0) { alert('Informe o valor (B).'); return; }
+        if (priceExceedsMax(pid, sid2, p2)) {
+          alert('Valor (B) acima do máximo permitido para este produto/fornecedor.');
+          return;
+        }
         preco2 = p2;
       }
+
       addRow({
         os, tipo: tipoSel.value,
         produto: currentProductName(),
         fornecedor: fornecedor2,
-        d: buildD2(),
+        d: buildB(),
         preco: preco2
       });
     }
@@ -419,13 +513,16 @@
   });
 
   document.getElementById('pedidoForm').addEventListener('submit', () => {
-    // Submissão padrão — backend valida e grava
+    // Submissão padrão — backend valida tudo novamente (não limpamos a lista aqui)
   });
 
   // Inicializações
   function init() {
+    refreshProductsByTipo();
     syncTipo();
     syncPairFields();
+    bindCylinder();
+    preventWheelOnNumber();
     table.style.display = 'none';
   }
   init();
