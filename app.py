@@ -1,7 +1,6 @@
 import os
 import io
 import csv
-from collections import defaultdict
 from datetime import datetime, date, timedelta
 from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash, send_file
 from sqlalchemy import create_engine, text
@@ -12,7 +11,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 DATABASE_URL = os.environ.get("DATABASE_URL")  # fornecido pelo Render Postgres
 TIMEZONE_TZ = os.environ.get("TZ", "America/Fortaleza")
 
-# SQLAlchemy Engine / Session
+# ========= SQLAlchemy =========
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
@@ -22,7 +21,6 @@ app.secret_key = SECRET_KEY
 # ============================ DB INIT ============================
 
 def init_db():
-    # Cria tabelas no Postgres (sem Alembic por enquanto)
     ddl = """
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -81,7 +79,7 @@ def init_db():
       os_number TEXT
     );
 
-    -- Remover índice único de OS (vamos permitir até 2 itens por OS)
+    -- Remover índice único antigo de OS se existir (vamos permitir até 2 por OS)
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_purchase_items_os') THEN
         EXECUTE 'DROP INDEX idx_purchase_items_os';
@@ -110,14 +108,11 @@ def init_db():
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
-
-        # garantir coluna in_stock para bases antigas
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
             pass
 
-        # cria admin default se não existir
         exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
         if exists == 0:
             from werkzeug.security import generate_password_hash
@@ -126,7 +121,8 @@ def init_db():
                 dict(u="admin", p=generate_password_hash("admin123"), r="admin", c=datetime.utcnow())
             )
 
-# Helpers comuns
+# ============================ HELPERS ============================
+
 def db_all(sql, **params):
     with engine.connect() as conn:
         return conn.execute(text(sql), params).mappings().all()
@@ -144,14 +140,11 @@ def audit(action, details=""):
     db_exec("INSERT INTO audit_log (user_id, action, details, created_at) VALUES (:uid,:a,:d,:c)",
             uid=(u["id"] if u else None), a=action, d=details, c=datetime.utcnow())
 
-# ============================ AUTH/CTX ============================
-
 def current_user():
     uid = session.get("user_id")
     if not uid:
         return None
-    u = db_one("SELECT * FROM users WHERE id=:id", id=uid)
-    return u
+    return db_one("SELECT * FROM users WHERE id=:id", id=uid)
 
 def require_role(*roles):
     u = current_user()
@@ -163,13 +156,39 @@ def require_role(*roles):
 def inject_globals():
     return {"now": datetime.utcnow(), "role": session.get("role"), "user": current_user(), "app_name": APP_NAME}
 
-# ============================ RELATÓRIOS (Excel in-memory) ============================
+def _serialize_combos(rows):
+    """Converte para tipos nativos (evita Decimal no tojson)."""
+    out = []
+    for r in rows:
+        out.append({
+            "rule_id": int(r["rule_id"]),
+            "product_id": int(r["product_id"]),
+            "product_name": str(r["product_name"]),
+            "kind": str(r["kind"]),
+            "supplier_id": int(r["supplier_id"]),
+            "supplier_name": str(r["supplier_name"]),
+            "max_price": float(r["max_price"]),
+        })
+    return out
+
+def _ensure_cart():
+    if "cart" not in session:
+        session["cart"] = []  # cada item: dict(product_id, product_name, kind, supplier_id, supplier_name, price, os_number, sphere,cylinder,base,addition)
+    return session["cart"]
+
+def _fmt_dioptria(item):
+    if item.get("kind") == "lente":
+        esf = item.get("sphere")
+        cil = item.get("cylinder")
+        return f"Esf {esf:+.2f} / Cil {cil:+.2f}"
+    else:
+        base = item.get("base")
+        add = item.get("addition")
+        return f"Base {base:.2f} / Adição +{add:.2f}"
+
+# ============================ RELATÓRIOS ============================
 
 def build_excel_bytes_for_day(day_str: str) -> bytes:
-    """
-    Gera o Excel em memória (sem salvar em disco) para o dia (YYYY-MM-DD).
-    Colunas: Fornecedor, Produto, Estoque, Dioptria, Data, Valor; e linha TOTAL no final.
-    """
     rows = db_all("""
         SELECT
             s.name  AS fornecedor,
@@ -219,7 +238,6 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
             float(f"{subtotal:.2f}")
         ])
 
-    # Linha de TOTAL
     ws.append(["", "", "", "", "", ""])
     ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
     ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
@@ -352,8 +370,7 @@ def admin_products_create():
         flash("Dados inválidos.", "error"); return redirect(url_for("admin_products"))
     try:
         db_exec(
-            "INSERT INTO products (name, code, kind, in_stock, active) "
-            "VALUES (:n,:c,:k,:instock,1)",
+            "INSERT INTO products (name, code, kind, in_stock, active) VALUES (:n,:c,:k,:instock,1)",
             n=name, c=code, k=kind, instock=in_stock
         )
         audit("product_create", f"{name}/{kind}/in_stock={in_stock}"); flash("Produto criado.", "success")
@@ -430,7 +447,6 @@ def admin_rules_toggle(rid):
 
 @app.route("/admin/import/template.xlsx")
 def admin_import_template():
-    # Gera o template Excel em memória e envia
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -617,7 +633,6 @@ def admin_import():
                 report["errors"].append(str(e))
                 flash("Falha na importação. Veja os erros.", "error")
 
-    # Página simples inline (sem depender de arquivo .html)
     html = """
     {% extends "base.html" %}
     {% block title %}Importação em Massa{% endblock %}
@@ -652,32 +667,12 @@ def admin_import():
     """
     return render_template_string(html, report=report)
 
-# ============================ COMPRADOR – NOVO PEDIDO COM LISTA (CARRINHO) ============================
-
-def _ensure_cart():
-    if "cart" not in session:
-        session["cart"] = []
-    return session["cart"]
-
-def _count_os_in_cart(os_number: str) -> int:
-    cart = session.get("cart", [])
-    return sum(1 for it in cart if it.get("os_number") == os_number)
-
-def _fmt_dioptria_row(item):
-    if item["tipo"] == "lente":
-        esf = f"{item.get('sphere'):+.2f}"
-        cil = f"{item.get('cylinder'):+.2f}"
-        return f"Esf {esf} / Cil {cil}"
-    else:
-        b = f"{item.get('base'):.2f}"
-        ad = f"+{item.get('addition'):.2f}"
-        return f"Base {b} / Adição {ad}"
+# -------- Comprador: Novo Pedido (lista + enviar/limpar) --------
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
     if require_role("comprador","admin"): return require_role("comprador","admin")
 
-    # combos: permite filtrar fornecedor por produto no front
     combos = db_all("""
         SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.kind,
                s.id as supplier_id, s.name as supplier_name, r.max_price
@@ -687,70 +682,87 @@ def compras_novo():
         WHERE r.active=1 AND p.active=1 AND s.active=1
         ORDER BY s.name, p.kind, p.name
     """)
+    combos_json = _serialize_combos(combos)
     products = db_all("SELECT * FROM products WHERE active=1 ORDER BY kind, name")
 
     cart = _ensure_cart()
+    action = request.form.get("action") if request.method == "POST" else None
 
-    if request.method == "POST":
-        action = request.form.get("action")  # add | clear | submit
+    def validate_lente(prefix):
+        sphere = request.form.get(f"{prefix}_sphere", type=float)
+        cylinder = request.form.get(f"{prefix}_cylinder", type=float)
+        if sphere is None or sphere < -20 or sphere > 20 or (abs(sphere*100) % 25 != 0):
+            return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
+        if cylinder is None or cylinder > 0 or cylinder < -15 or (abs(cylinder*100) % 25 != 0):
+            return None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
+        return {"sphere": sphere, "cylinder": cylinder, "base": None, "addition": None}, None
 
-        if action == "clear":
-            session["cart"] = []
-            flash("Lista de envio limpa.", "info")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=[])
+    def validate_bloco(prefix):
+        base = request.form.get(f"{prefix}_base", type=float)
+        addition = request.form.get(f"{prefix}_addition", type=float)
+        allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
+        if base is None or base not in allowed_bases:
+            return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
+        if addition is None or addition < 1.0 or addition > 4.0 or (abs(addition*100) % 25 != 0):
+            return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
+        return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
 
-        if action == "submit":
-            if not cart:
-                flash("A lista está vazia.", "error")
-                return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+    # ---- Remover linha específica do carrinho ----
+    if action == "remove":
+        idx = request.form.get("idx", type=int)
+        if idx is not None and 0 <= idx < len(cart):
+            removed = cart.pop(idx)
+            session.modified = True
+            flash(f"Linha removida (OS {removed.get('os_number', '-')}).", "info")
+        return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-            # Agrupar por fornecedor e enviar pedidos
-            grouped = defaultdict(list)
-            for it in cart:
-                grouped[it["supplier_id"]].append(it)
+    # ---- Limpar lista inteira ----
+    if action == "clear":
+        session["cart"] = []
+        flash("Lista de itens limpa.", "info")
+        return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=_ensure_cart())
 
-            created_orders = []
-            with engine.begin() as conn:
-                for supplier_id, items in grouped.items():
-                    total = sum(float(i["price"]) for i in items)
-                    note = "; ".join(sorted({f"OS {i['os_number']}" for i in items}))
-                    res = conn.execute(text("""
-                        INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-                        VALUES (:b,:s,'PENDENTE_PAGAMENTO',:t,:n,:c,:u)
-                        RETURNING id
-                    """), dict(b=session["user_id"], s=int(supplier_id), t=total, n=note,
-                               c=datetime.utcnow(), u=datetime.utcnow()))
-                    order_id = res.scalar_one()
-                    created_orders.append(order_id)
+    # ---- Enviar ao pagador (cria pedidos agrupados por fornecedor) ----
+    if action == "submit":
+        if not cart:
+            flash("A lista está vazia.", "error")
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-                    for it in items:
-                        conn.execute(text("""
-                            INSERT INTO purchase_items
-                            (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                            VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
-                        """), dict(
-                            o=order_id,
-                            p=int(it["product_id"]),
-                            pr=float(it["price"]),
-                            sf=it.get("sphere"),
-                            cl=it.get("cylinder"),
-                            ba=it.get("base"),
-                            ad=it.get("addition"),
-                            os=it["os_number"]
-                        ))
+        # Agrupar por fornecedor
+        by_supplier = {}
+        for it in cart:
+            sid = it["supplier_id"]
+            by_supplier.setdefault(sid, []).append(it)
 
-            audit("orders_create_from_cart", f"n_orders={len(created_orders)} ids={created_orders}")
-            session["cart"] = []
-            flash("Pedido(s) criado(s) e enviado(s) ao pagador.", "success")
-            return redirect(url_for("compras_lista"))
+        with engine.begin() as conn:
+            for sid, items in by_supplier.items():
+                total = sum(float(x["price"]) for x in items)
+                os_list = sorted(set(x["os_number"] for x in items))
+                note = "OS " + ", ".join(os_list)
+                order_id = conn.execute(text("""
+                    INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+                    VALUES (:b,:s,'PENDENTE_PAGAMENTO',:t,:n,:c,:u) RETURNING id
+                """), dict(b=session["user_id"], s=sid, t=total, n=note, c=datetime.utcnow(), u=datetime.utcnow())).scalar_one()
 
-        # ---------------------- action == "add" ----------------------
-        # Campos principais
+                for x in items:
+                    conn.execute(text("""
+                        INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                        VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
+                    """), dict(o=order_id, p=x["product_id"], pr=x["price"],
+                               sf=x.get("sphere"), cl=x.get("cylinder"),
+                               ba=x.get("base"), ad=x.get("addition"),
+                               os=x["os_number"]))
+        audit("orders_create_from_cart", f"groups={len(by_supplier)} items={len(cart)}")
+        session["cart"] = []
+        flash("Pedido(s) criado(s) e enviado(s) ao pagador.", "success")
+        return redirect(url_for("compras_lista"))
+
+    # ---- Adicionar item(ens) na lista ----
+    if action == "add":
         os_number = (request.form.get("os_number") or "").strip()
-        pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
-        tipo = (request.form.get("tipo") or "").lower()  # 'lente' ou 'bloco'
+        pair_option = request.form.get("pair_option")  # 'meio' | 'par'
+        tipo = (request.form.get("tipo") or "").lower()  # 'lente' | 'bloco'
         product_id = request.form.get("product_id", type=int)
-
         supplier_main = request.form.get("supplier_main", type=int)
         price_main = request.form.get("price_main", type=float)
 
@@ -760,28 +772,20 @@ def compras_novo():
 
         if not os_number:
             flash("Informe o número da OS.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
-
-        # Quantidade já existente (DB) + no carrinho para mesma OS
-        existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
-        existing_n = int(existing["n"] if existing else 0)
-        cart_n = _count_os_in_cart(os_number)
-
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
         if pair_option not in ("meio","par"):
             flash("Selecione se é meio par ou um par.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
-
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
         if tipo not in ("lente","bloco"):
             flash("Selecione o tipo (lente/bloco).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
-
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
         if not product_id:
             flash("Selecione o produto.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-        # Validação de fornecedor/regra para item principal
+        # Regras/fornecedor para item principal
         rule_main = db_one("""
-            SELECT r.*, p.name AS product_name, p.kind as product_kind, s.name AS supplier_name
+            SELECT r.*, p.kind as product_kind, p.name as product_name, s.name as supplier_name
             FROM rules r
             JOIN products p ON p.id = r.product_id
             JOIN suppliers s ON s.id = r.supplier_id
@@ -789,110 +793,97 @@ def compras_novo():
         """, pid=product_id, sid=supplier_main)
         if not rule_main:
             flash("Fornecedor principal indisponível para este produto.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
         if price_main is None or price_main <= 0 or price_main > float(rule_main["max_price"]) + 1e-6:
             flash(f"Preço do item principal inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-        # Funções de validação de dioptria
-        def validate_lente(prefix):
-            sphere = request.form.get(f"{prefix}_sphere", type=float)
-            cylinder = request.form.get(f"{prefix}_cylinder", type=float)
-            if sphere is None or sphere < -20 or sphere > 20 or (abs(sphere*100) % 25 != 0):
-                return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
-            if cylinder is None or cylinder > 0 or cylinder < -15 or (abs(cylinder*100) % 25 != 0):
-                return None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
-            return {"sphere": sphere, "cylinder": cylinder, "base": None, "addition": None}, None
-
-        def validate_bloco(prefix):
-            base = request.form.get(f"{prefix}_base", type=float)
-            addition = request.form.get(f"{prefix}_addition", type=float)
-            allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
-            if base is None or base not in allowed_bases:
-                return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
-            if addition is None or addition < 1.0 or addition > 4.0 or (abs(addition*100) % 25 != 0):
-                return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
-            return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
-
-        items_to_add = []
-        # Item 1
+        # Dioptrias do item 1
         if tipo == "lente":
             d1, err = validate_lente("d1")
-            if err: flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
         else:
             d1, err = validate_bloco("d1")
-            if err: flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
-        items_to_add.append({
-            "tipo": "lente" if tipo == "lente" else "bloco",
-            "os_number": os_number,
-            "product_id": product_id,
-            "product_name": rule_main["product_name"],
-            "supplier_id": supplier_main,
-            "supplier_name": rule_main["supplier_name"],
-            "price": price_main,
-            "sphere": d1["sphere"],
-            "cylinder": d1["cylinder"],
-            "base": d1["base"],
-            "addition": d1["addition"]
-        })
+        if err:
+            flash(err, "error")
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-        # Item 2 (se par)
+        items_to_add = [{
+            "os_number": os_number,
+            "product_id": int(product_id),
+            "product_name": rule_main["product_name"],
+            "kind": tipo,
+            "supplier_id": int(supplier_main),
+            "supplier_name": rule_main["supplier_name"],
+            "price": float(price_main),
+            "sphere": d1["sphere"], "cylinder": d1["cylinder"],
+            "base": d1["base"], "addition": d1["addition"],
+        }]
+
+        # Segundo item (se for par)
         if pair_option == "par":
             if supplier_distinto:
                 if not supplier_second:
-                    flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+                    flash("Selecione o fornecedor do segundo item.", "error")
+                    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
                 rule_second = db_one("""
-                    SELECT r.*, p.name AS product_name, p.kind as product_kind, s.name AS supplier_name
+                    SELECT r.*, p.kind as product_kind, p.name as product_name, s.name as supplier_name
                     FROM rules r
                     JOIN products p ON p.id = r.product_id
                     JOIN suppliers s ON s.id = r.supplier_id
                     WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
                 """, pid=product_id, sid=supplier_second)
                 if not rule_second:
-                    flash("Fornecedor do segundo item indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+                    flash("Fornecedor do segundo item indisponível para este produto.", "error")
+                    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
                 if price_second is None or price_second <= 0 or price_second > float(rule_second["max_price"]) + 1e-6:
-                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error")
+                    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
+                supplier2_id = int(supplier_second)
+                supplier2_name = rule_second["supplier_name"]
+                price2 = float(price_second)
             else:
-                supplier_second = supplier_main
-                price_second = price_main
-                rule_second = rule_main
+                supplier2_id = int(supplier_main)
+                supplier2_name = rule_main["supplier_name"]
+                price2 = float(price_main)
 
             if tipo == "lente":
                 d2, err = validate_lente("d2")
-                if err: flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
             else:
                 d2, err = validate_bloco("d2")
-                if err: flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+            if err:
+                flash(err, "error")
+                return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
             items_to_add.append({
-                "tipo": "lente" if tipo == "lente" else "bloco",
                 "os_number": os_number,
-                "product_id": product_id,
-                "product_name": rule_second["product_name"],
-                "supplier_id": supplier_second,
-                "supplier_name": rule_second["supplier_name"],
-                "price": price_second,
-                "sphere": d2["sphere"],
-                "cylinder": d2["cylinder"],
-                "base": d2["base"],
-                "addition": d2["addition"]
+                "product_id": int(product_id),
+                "product_name": rule_main["product_name"],
+                "kind": tipo,
+                "supplier_id": supplier2_id,
+                "supplier_name": supplier2_name,
+                "price": price2,
+                "sphere": d2["sphere"], "cylinder": d2["cylinder"],
+                "base": d2["base"], "addition": d2["addition"],
             })
 
-        # Limite 2 por OS (DB + carrinho + novos)
-        if existing_n + cart_n + len(items_to_add) > 2:
+        # Regra: por OS só pode até 2 itens (um par). Considerar DB + carrinho + novos
+        existing_db = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
+        existing_db_n = int(existing_db["n"] if existing_db else 0)
+        cart_n = sum(1 for x in cart if x.get("os_number") == os_number)
+        if existing_db_n + cart_n + len(items_to_add) > 2:
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+            return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-        # Adicionar no carrinho (uma linha por unidade)
+        # Adicionar ao carrinho
         cart.extend(items_to_add)
         session.modified = True
-        flash(f"{len(items_to_add)} item(ns) adicionado(s) à lista.", "success")
-        return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+        flash(f"{len(items_to_add)} linha(s) adicionada(s) à lista (OS {os_number}).", "success")
+        return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-    # GET
-    return render_template("compras_novo.html", combos=combos, products=products, cart=cart)
+    # GET inicial
+    return render_template("compras_novo.html", combos_json=combos_json, products=products, cart=cart)
 
-# -------- Compras: Lista e Detalhe --------
+# -------- Comprador: Lista/Detalhe --------
 
 @app.route("/compras")
 def compras_lista():
@@ -978,7 +969,7 @@ def pagamentos_detalhe(oid):
 def relatorios_index():
     if require_role("admin","pagador"): return require_role("admin","pagador")
     ontem = (date.today() - timedelta(days=1)).isoformat()
-    existing = []  # sem disco: não listamos arquivos, mas mostramos a data padrão (ontem)
+    existing = []
     default_day = ontem
     return render_template("relatorios.html", existing=existing, default_day=default_day)
 
@@ -1032,15 +1023,11 @@ def admin_orders_delete(oid):
 
 # ============================ BOOTSTRAP ============================
 
-# Inicializa o banco na importação do app (compatível com Flask 3 + Gunicorn)
 try:
     init_db()
 except Exception as e:
-    # Log em stdout para aparecer nos logs do Render
     print(f"[BOOT] init_db() falhou: {e}", flush=True)
 
-# Execução local (opcional)
 if __name__ == "__main__":
-    # Para rodar local, configure DATABASE_URL, ex:
-    # export DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/db
+    # Para rodar local, defina: set DATABASE_URL=postgresql+psycopg2://user:pass@host/db
     app.run(host="0.0.0.0", port=5000, debug=True)
