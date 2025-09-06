@@ -21,7 +21,6 @@ app.secret_key = SECRET_KEY
 # ============================ DB INIT ============================
 
 def init_db():
-    # Cria tabelas no Postgres (sem Alembic por enquanto)
     ddl = """
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -80,7 +79,6 @@ def init_db():
       os_number TEXT
     );
 
-    -- Remover índice único antigo de OS se existir (vamos permitir até 2 por OS)
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_purchase_items_os') THEN
         EXECUTE 'DROP INDEX idx_purchase_items_os';
@@ -109,14 +107,10 @@ def init_db():
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
-
-        # garantir coluna in_stock para bases antigas
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
             pass
-
-        # cria admin default se não existir
         exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
         if exists == 0:
             from werkzeug.security import generate_password_hash
@@ -165,10 +159,6 @@ def inject_globals():
 # ============================ RELATÓRIOS (Excel in-memory) ============================
 
 def build_excel_bytes_for_day(day_str: str) -> bytes:
-    """
-    Gera o Excel em memória (sem salvar em disco) para o dia (YYYY-MM-DD).
-    Colunas: Fornecedor, Produto, Estoque, Dioptria, Data, Valor; e linha TOTAL no final.
-    """
     rows = db_all("""
         SELECT
             s.name  AS fornecedor,
@@ -218,7 +208,6 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
             float(f"{subtotal:.2f}")
         ])
 
-    # Linha de TOTAL
     ws.append(["", "", "", "", "", ""])
     ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
     ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
@@ -324,7 +313,7 @@ def admin_suppliers_delete(sid):
     if require_role("admin"): return require_role("admin")
     used_rule = db_one("SELECT 1 FROM rules WHERE supplier_id=:id LIMIT 1", id=sid)
     used_order = db_one("SELECT 1 FROM purchase_orders WHERE supplier_id=:id LIMIT 1", id=sid)
-    if used_rule or used_order:
+    if used_rule ou used_order:
         flash("Não é possível excluir: fornecedor em uso (regras ou pedidos).", "error")
         return redirect(url_for("admin_suppliers"))
     db_exec("DELETE FROM suppliers WHERE id=:id", id=sid)
@@ -429,7 +418,6 @@ def admin_rules_toggle(rid):
 
 @app.route("/admin/import/template.xlsx")
 def admin_import_template():
-    # Gera o template Excel em memória e envia
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -558,7 +546,7 @@ def admin_import():
                         headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
                         def idx(col): return headers.index(col) if col in headers else -1
                         i_pn = idx("product_name"); i_pk = idx("product_kind"); i_sn = idx("supplier_name"); i_mp = idx("max_price"); i_active = idx("active")
-                        if i_pn == -1 or i_pk == -1 or i_sn == -1 or i_mp == -1:
+                        if i_pn == -1 ou i_pk == -1 ou i_sn == -1 ou i_mp == -1:
                             report["errors"].append("Rules: colunas obrigatórias 'product_name', 'product_kind', 'supplier_name', 'max_price' não encontradas.")
                         else:
                             for row in ws.iter_rows(min_row=2, values_only=True):
@@ -575,7 +563,6 @@ def admin_import():
                                     continue
                                 active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
 
-                                # Garantir IDs
                                 prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
                                 if not prod:
                                     prod = conn.execute(text("""
@@ -616,7 +603,6 @@ def admin_import():
                 report["errors"].append(str(e))
                 flash("Falha na importação. Veja os erros.", "error")
 
-    # Página simples inline (sem depender de arquivo .html)
     html = """
     {% extends "base.html" %}
     {% block title %}Importação em Massa{% endblock %}
@@ -651,7 +637,7 @@ def admin_import():
     """
     return render_template_string(html, report=report)
 
-# -------- Comprador: Novo Pedido (com lista temporária, código do produto, cilíndrico negativo) --------
+# -------- Comprador: Novo Pedido (A/B, filtro por tipo, validação de preço no cliente) --------
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
@@ -669,7 +655,7 @@ def compras_novo():
     """)
     products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
 
-    # >>> Conversão para JSON-serializável (evita erro 500 no template) <<<
+    # para tojson no template
     combos = [dict(r) for r in combos]
     products = [dict(p) for p in products]
 
@@ -711,7 +697,7 @@ def compras_novo():
             flash("Selecione o produto (ou informe um código válido).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Validação de fornecedor/regra D1
+        # Regra D1
         rule_main = db_one("""
             SELECT r.*, p.kind as product_kind
             FROM rules r JOIN products p ON p.id = r.product_id
@@ -721,20 +707,19 @@ def compras_novo():
             flash("Fornecedor principal indisponível para este produto.", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
         if price_main is None or price_main <= 0 or price_main > float(rule_main["max_price"]) + 1e-6:
-            flash(f"Preço do item principal inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
+            flash(f"Preço do item A inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Utilitários de validação
+        # Utilitários
         def _step_ok(x: float) -> bool:
-            return (abs(x * 100) % 25) == 0  # múltiplos de 0,25
+            return (abs(x * 100) % 25) == 0
 
         def validate_lente(prefix):
             sphere = request.form.get(f"{prefix}_sphere", type=float)
             cylinder_raw = request.form.get(f"{prefix}_cylinder", type=float)
-            # normaliza para negativo
             cylinder = None
             if cylinder_raw is not None:
-                cylinder = -abs(cylinder_raw)
+                cylinder = -abs(cylinder_raw)  # sempre negativo
             if sphere is None or sphere < -20 or sphere > 20 or not _step_ok(sphere):
                 return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
             if cylinder is None or cylinder > 0 or cylinder < -15 or not _step_ok(cylinder):
@@ -753,51 +738,49 @@ def compras_novo():
 
         items_to_add = []
 
-        # Item D1
+        # Item A
         if tipo == "lente":
-            d1, err = validate_lente("d1")
+            a, err = validate_lente("a")
             if err:
                 flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
         else:
-            d1, err = validate_bloco("d1")
+            a, err = validate_bloco("a")
             if err:
                 flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
-        items_to_add.append({"product_id": product_id, "supplier_id": supplier_main, "price": price_main, "d": d1})
+        items_to_add.append({"product_id": product_id, "supplier_id": supplier_main, "price": price_main, "d": a})
 
-        # Item D2 se “par”
+        # Item B se par
         if pair_option == "par":
             if supplier_distinto:
                 if not supplier_second:
-                    flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash("Selecione o fornecedor do item B.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
                 rule_second = db_one("""
                     SELECT r.*, p.kind as product_kind
                     FROM rules r JOIN products p ON p.id = r.product_id
                     WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
                 """, pid=product_id, sid=supplier_second)
                 if not rule_second:
-                    flash("Fornecedor do segundo item indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash("Fornecedor do item B indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
                 if price_second is None or price_second <= 0 or price_second > float(rule_second["max_price"]) + 1e-6:
-                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash(f"Preço do item B inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products)
             else:
                 supplier_second, price_second = supplier_main, price_main
 
             if tipo == "lente":
-                d2, err = validate_lente("d2")
+                b, err = validate_lente("b")
                 if err:
                     flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
             else:
-                d2, err = validate_bloco("d2")
+                b, err = validate_bloco("b")
                 if err:
                     flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
 
-            items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": d2})
+            items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": b})
 
-        # Limite de 2 por OS
         if existing_n + len(items_to_add) > 2:
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Criação do pedido (cabeçalho usa fornecedor do 1º item)
         total = sum([it["price"] for it in items_to_add])
         with engine.begin() as conn:
             res = conn.execute(text("""
@@ -905,17 +888,15 @@ def pagamentos_detalhe(oid):
 def relatorios_index():
     if require_role("admin","pagador"): return require_role("admin","pagador")
     ontem = (date.today() - timedelta(days=1)).isoformat()
-    existing = []  # sem disco: não listamos arquivos, mas mostramos a data padrão (ontem)
+    existing = []
     default_day = ontem
     return render_template("relatorios.html", existing=existing, default_day=default_day)
 
 @app.route("/relatorios/diario.xlsx")
 def relatorio_diario_xlsx():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    day = request.args.get("date") or (date.today() - timedelta(days=1)).isoformat()
-    if day >= date.today().isoformat():
-        flash("O relatório de hoje ficará disponível apenas amanhã (após 24h).", "info")
-        return redirect(url_for("relatorios_index"))
+    # >>> sem esperar 24h: gera com o que tiver pago na data informada <<<
+    day = request.args.get("date") or date.today().isoformat()
     xbytes = build_excel_bytes_for_day(day)
     return send_file(io.BytesIO(xbytes),
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -924,7 +905,7 @@ def relatorio_diario_xlsx():
 @app.route("/relatorios/diario.csv")
 def relatorio_diario_csv():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    target_day = (date.today() - timedelta(days=1)).isoformat()
+    target_day = request.args.get("date") or date.today().isoformat()
     rows = db_all("""
         SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
                o.id as order_id, s.name as supplier_name, u.username as payer_name
@@ -959,14 +940,11 @@ def admin_orders_delete(oid):
 
 # ============================ BOOTSTRAP ============================
 
-# Inicializa o banco na importação do app (compatível com Flask 3 + Gunicorn)
 try:
     init_db()
 except Exception as e:
-    # Log em stdout para aparecer nos logs do Render
     print(f"[BOOT] init_db() falhou: {e}", flush=True)
 
-# Execução local (opcional)
 if __name__ == "__main__":
-    # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db) antes de executar
+    # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db)
     app.run(host="0.0.0.0", port=5000, debug=True)

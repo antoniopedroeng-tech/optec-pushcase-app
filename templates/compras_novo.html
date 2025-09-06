@@ -3,7 +3,6 @@
 {% block content %}
 <style>
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-  .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
   .form-check-inline { display: inline-flex; align-items: center; gap: 8px; margin-right: 18px; }
   .form-check-inline input[type="checkbox"],
   .form-check-inline input[type="radio"] { transform: scale(1.15); margin: 0; }
@@ -13,6 +12,10 @@
   table.items th, table.items td { border:1px solid #ddd; padding:6px 8px; font-size: 14px; }
   table.items th { background:#f9f9f9; }
   .muted { color:#666; font-size: 12px; }
+  /* remove setas do number em alguns browsers */
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
 </style>
 
 <h2>Novo Pedido</h2>
@@ -53,14 +56,8 @@
       <div>
         <label>Código do produto</label>
         <input list="codes" name="product_code" id="product_code" class="form-control" placeholder="Ex.: LA167">
-        <datalist id="codes">
-          {% for p in products %}
-            {% if p.code %}
-              <option value="{{p.code}}">{{p.name}} ({{p.kind}})</option>
-            {% endif %}
-          {% endfor %}
-        </datalist>
-        <div class="muted">Digite o código para localizar mais rápido.</div>
+        <datalist id="codes"></datalist>
+        <div class="muted">Digite o código (lista filtrada pelo tipo).</div>
       </div>
     </div>
 
@@ -70,44 +67,45 @@
         <select name="product_id" id="product_id" class="form-control">
           <option value="">Selecione…</option>
           {% for p in products %}
-            <option value="{{p.id}}" data-code="{{p.code or ''}}" data-kind="{{p.kind}}">{{p.name}} {% if p.code %}— {{p.code}}{% endif %}</option>
+            <option value="{{p.id}}" data-code="{{p.code or ''}}" data-kind="{{p.kind}}">{{p.name}}{% if p.code %} — {{p.code}}{% endif %}</option>
           {% endfor %}
         </select>
+        <div class="muted">Máximo permitido (por fornecedor): <span id="max_info">—</span></div>
       </div>
 
       <div>
-        <label>Fornecedor (disponíveis pela regra)</label>
+        <label>Fornecedor (pela regra)</label>
         <select name="supplier_main" id="supplier_main" class="form-control"></select>
-        <div class="muted">A lista é filtrada pelo produto escolhido.</div>
+        <div class="muted">Filtrado pelo produto. Cada opção mostra o máximo.</div>
       </div>
     </div>
   </div>
 
-  <!-- Dioptrias -->
+  <!-- Dioptrias A/B -->
   <div class="section">
     <div id="lente_fields">
       <div class="form-row">
         <div>
-          <label>Esférico (D1)</label>
-          <input type="number" step="0.25" name="d1_sphere" class="form-control">
+          <label>Esférico (A)</label>
+          <input type="number" step="0.25" name="a_sphere" class="form-control num">
         </div>
         <div>
-          <label>Cilíndrico (D1)</label>
-          <input type="number" step="0.25" name="d1_cylinder" class="form-control cil">
-          <div class="muted">O sistema sempre normaliza para negativo.</div>
+          <label>Cilíndrico (A)</label>
+          <input type="number" step="0.25" name="a_cylinder" class="form-control num cil">
+          <div class="muted">Normalizado para negativo.</div>
         </div>
       </div>
 
-      <div id="lente_d2_wrap" style="display:none">
+      <div id="lente_b_wrap" style="display:none">
         <div class="form-row">
           <div>
-            <label>Esférico (D2)</label>
-            <input type="number" step="0.25" name="d2_sphere" class="form-control">
+            <label>Esférico (B)</label>
+            <input type="number" step="0.25" name="b_sphere" class="form-control num">
           </div>
           <div>
-            <label>Cilíndrico (D2)</label>
-            <input type="number" step="0.25" name="d2_cylinder" class="form-control cil">
-            <div class="muted">O sistema sempre normaliza para negativo.</div>
+            <label>Cilíndrico (B)</label>
+            <input type="number" step="0.25" name="b_cylinder" class="form-control num cil">
+            <div class="muted">Normalizado para negativo.</div>
           </div>
         </div>
       </div>
@@ -116,32 +114,32 @@
     <div id="bloco_fields" style="display:none">
       <div class="form-row">
         <div>
-          <label>Base (D1)</label>
-          <select name="d1_base" class="form-control">
+          <label>Base (A)</label>
+          <select name="a_base" class="form-control">
             <option value="">Selecione…</option>
             <option>0.5</option><option>1.0</option><option>2.0</option>
             <option>4.0</option><option>6.0</option><option>8.0</option><option>10.0</option>
           </select>
         </div>
         <div>
-          <label>Adição (D1)</label>
-          <input type="number" step="0.25" name="d1_addition" class="form-control">
+          <label>Adição (A)</label>
+          <input type="number" step="0.25" name="a_addition" class="form-control num">
         </div>
       </div>
 
-      <div id="bloco_d2_wrap" style="display:none">
+      <div id="bloco_b_wrap" style="display:none">
         <div class="form-row">
           <div>
-            <label>Base (D2)</label>
-            <select name="d2_base" class="form-control">
+            <label>Base (B)</label>
+            <select name="b_base" class="form-control">
               <option value="">Selecione…</option>
               <option>0.5</option><option>1.0</option><option>2.0</option>
               <option>4.0</option><option>6.0</option><option>8.0</option><option>10.0</option>
             </select>
           </div>
           <div>
-            <label>Adição (D2)</label>
-            <input type="number" step="0.25" name="d2_addition" class="form-control">
+            <label>Adição (B)</label>
+            <input type="number" step="0.25" name="b_addition" class="form-control num">
           </div>
         </div>
       </div>
@@ -152,13 +150,14 @@
   <div class="section">
     <div class="form-row">
       <div>
-        <label>Valor (D1)</label>
-        <input type="number" step="0.01" name="price_main" id="price_main" class="form-control">
+        <label>Valor (A)</label>
+        <input type="number" step="0.01" name="price_main" id="price_main" class="form-control num">
+        <div class="muted">Máx A: <span id="max_main">—</span></div>
       </div>
       <div>
         <label class="form-check-inline">
           <input type="checkbox" name="supplier_distinto" id="supplier_distinto">
-          <span>Fornecedor distinto</span>
+          <span>Fornecedor distinto para B</span>
         </label>
       </div>
     </div>
@@ -166,25 +165,26 @@
     <div id="second_supplier_wrap" style="display:none">
       <div class="form-row">
         <div>
-          <label>Fornecedor (D2)</label>
+          <label>Fornecedor (B)</label>
           <select name="supplier_second" id="supplier_second" class="form-control"></select>
         </div>
         <div>
-          <label>Valor (D2)</label>
-          <input type="number" step="0.01" name="price_second" id="price_second" class="form-control">
+          <label>Valor (B)</label>
+          <input type="number" step="0.01" name="price_second" id="price_second" class="form-control num">
+          <div class="muted">Máx B: <span id="max_second">—</span></div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Área de lista temporária no cliente -->
+  <!-- Lista -->
   <div class="section">
     <div class="actions">
       <button type="button" id="add_to_list" class="btn btn-secondary">Adicionar à lista</button>
       <button type="button" id="clear_list" class="btn btn-light">Limpar lista</button>
       <button type="submit" class="btn btn-primary">Enviar ao pagador</button>
     </div>
-    <div class="muted">Cada linha da lista é uma unidade. Para par de lentes, serão 2 linhas (D1 e D2).</div>
+    <div class="muted">Cada linha é uma unidade. Para par, serão 2 linhas (A e B).</div>
 
     <table class="items" id="items_table" style="display:none">
       <thead>
@@ -211,10 +211,10 @@
 </form>
 
 <script>
-  // --- dados vindos do backend (regras e produtos) ---
   const combos = {{ combos|tojson }};
   const products = {{ products|tojson }};
 
+  // util: mapa produto -> fornecedores [{id,name,max}]
   function suppliersForProduct(pid) {
     const items = combos.filter(c => c.product_id === Number(pid));
     const byId = new Map();
@@ -224,37 +224,82 @@
 
   const productSelect = document.getElementById('product_id');
   const productCode = document.getElementById('product_code');
+  const codesDatalist = document.getElementById('codes');
   const tipoSel = document.getElementById('tipo');
   const suppMain = document.getElementById('supplier_main');
   const suppSecond = document.getElementById('supplier_second');
   const supplierDistinto = document.getElementById('supplier_distinto');
   const secondWrap = document.getElementById('second_supplier_wrap');
   const pairRadios = document.querySelectorAll('input[name="pair_option"]');
+  const maxInfo = document.getElementById('max_info');
+  const maxMain = document.getElementById('max_main');
+  const maxSecond = document.getElementById('max_second');
+
+  // rebuild datalist de códigos filtrando por tipo
+  function rebuildCodeDatalist() {
+    const kind = tipoSel.value;
+    codesDatalist.innerHTML = '';
+    products.filter(p => p.kind === kind && (p.code || '').trim() !== '')
+      .forEach(p => {
+        const op = document.createElement('option');
+        op.value = p.code;
+        op.label = `${p.name} (${p.kind})`;
+        codesDatalist.appendChild(op);
+      });
+  }
 
   function refreshSuppliers() {
     const pid = productSelect.value;
     suppMain.innerHTML = '';
     suppSecond.innerHTML = '';
+    maxInfo.textContent = '—';
+    maxMain.textContent = '—';
+    maxSecond.textContent = '—';
     if (!pid) return;
-    suppliersForProduct(pid).forEach(s => {
+    const sup = suppliersForProduct(pid);
+    sup.forEach(s => {
       const o1 = document.createElement('option');
-      o1.value = s.id; o1.textContent = s.name;
+      o1.value = s.id; o1.textContent = `${s.name} (máx R$ ${Number(s.max).toFixed(2)})`;
+      o1.dataset.max = s.max;
       suppMain.appendChild(o1);
       const o2 = document.createElement('option');
-      o2.value = s.id; o2.textContent = s.name;
+      o2.value = s.id; o2.textContent = `${s.name} (máx R$ ${Number(s.max).toFixed(2)})`;
+      o2.dataset.max = s.max;
       suppSecond.appendChild(o2);
     });
+    // mostrar resumo de máximos disponíveis para o produto
+    if (sup.length) {
+      const parts = sup.map(s => `${s.name}: R$ ${Number(s.max).toFixed(2)}`);
+      maxInfo.textContent = parts.join(' | ');
+      updateMaxSpans();
+    }
+  }
+
+  function getSelectedMax(sel) {
+    const opt = sel.selectedOptions[0];
+    return opt ? parseFloat(opt.dataset.max) : NaN;
+  }
+  function updateMaxSpans() {
+    const m1 = getSelectedMax(suppMain);
+    if (!isNaN(m1)) maxMain.textContent = `R$ ${m1.toFixed(2)}`;
+    if (supplierDistinto.checked) {
+      const m2 = getSelectedMax(suppSecond);
+      if (!isNaN(m2)) maxSecond.textContent = `R$ ${m2.toFixed(2)}`;
+    } else {
+      maxSecond.textContent = `R$ ${(!isNaN(m1) ? m1.toFixed(2) : '--')}`;
+    }
   }
 
   productSelect.addEventListener('change', () => {
     const opt = productSelect.selectedOptions[0];
     if (opt && opt.dataset.kind) {
       tipoSel.value = opt.dataset.kind;
+      rebuildCodeDatalist();
     }
     refreshSuppliers();
   });
 
-  // Digitar o código -> selecionar produto automático (respeita tipo)
+  // Digitar código -> selecionar produto do mesmo tipo
   productCode.addEventListener('change', () => {
     const code = productCode.value.trim();
     const kind = tipoSel.value;
@@ -266,28 +311,41 @@
     }
   });
 
-  // Mostrar/ocultar D2 e fornecedor D2
+  // Reagir a mudanças que afetam máximos
+  suppMain.addEventListener('change', updateMaxSpans);
+  suppSecond.addEventListener('change', updateMaxSpans);
+
   function syncPairFields() {
     const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
-    document.getElementById('lente_d2_wrap').style.display = isPar ? '' : 'none';
-    document.getElementById('bloco_d2_wrap').style.display = isPar ? '' : 'none';
+    document.getElementById('lente_b_wrap').style.display = isPar ? '' : 'none';
+    document.getElementById('bloco_b_wrap').style.display = isPar ? '' : 'none';
     secondWrap.style.display = (isPar && supplierDistinto.checked) ? '' : 'none';
   }
   pairRadios.forEach(r => r.addEventListener('change', syncPairFields));
-  supplierDistinto.addEventListener('change', syncPairFields);
+  supplierDistinto.addEventListener('change', () => { syncPairFields(); updateMaxSpans(); });
 
-  // Alternar blocos por tipo
   function syncTipo() {
     const t = tipoSel.value;
     document.getElementById('lente_fields').style.display = (t === 'lente') ? '' : 'none';
     document.getElementById('bloco_fields').style.display = (t === 'bloco') ? '' : 'none';
+    // filtra selects de produto visualmente
+    for (const op of productSelect.options) {
+      if (!op.value) continue;
+      op.hidden = (op.dataset.kind !== t);
+    }
+    // limpar seleção incompatível
+    if (productSelect.selectedOptions[0] && productSelect.selectedOptions[0].dataset.kind !== t) {
+      productSelect.value = '';
+    }
+    rebuildCodeDatalist();
+    refreshSuppliers();
   }
   tipoSel.addEventListener('change', syncTipo);
 
-  // Normalização: cilíndrico sempre negativo (no navegador)
+  // Normalização: cilíndrico sempre negativo
   function normalizeCylinderInput(el) {
     if (!el.value) return;
-    const v = parseFloat(el.value.replace(',', '.'));
+    const v = parseFloat(String(el.value).replace(',', '.'));
     if (!isNaN(v)) el.value = (-Math.abs(v)).toFixed(2);
   }
   document.querySelectorAll('input.cil').forEach(el => {
@@ -295,7 +353,14 @@
     el.addEventListener('change', () => normalizeCylinderInput(el));
   });
 
-  // Lista temporária (cliente)
+  // BLOQUEAR SCROLL do mouse em inputs numéricos
+  function disableWheelOnNumberInputs() {
+    document.querySelectorAll('input.num').forEach(inp => {
+      inp.addEventListener('wheel', function(e){ this.blur(); e.preventDefault(); }, { passive:false });
+    });
+  }
+
+  // Lista temporária
   const table = document.getElementById('items_table');
   const tbody = table.querySelector('tbody');
   const totalCell = document.getElementById('total_cell');
@@ -313,7 +378,7 @@
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${row.os}</td>
-      <td>${row.tipo}</td>
+      <td>${row.tipo.toUpperCase()} (${row.slot})</td>
       <td>${row.produto}</td>
       <td>${row.fornecedor}</td>
       <td>${dioptriaResumo(row.tipo, row.d)}</td>
@@ -341,35 +406,40 @@
     table.style.display = tbody.children.length ? '' : 'none';
   }
 
-  function buildD1() {
-    if (tipoSel.value === 'lente') {
-      const sph = document.querySelector('input[name="d1_sphere"]').value;
-      const cyl = document.querySelector('input[name="d1_cylinder"]').value;
-      const v = parseFloat(cyl.replace(',', '.'));
+  function buildA(tipo) {
+    if (tipo === 'lente') {
+      const sph = document.querySelector('input[name="a_sphere"]').value;
+      const cyl = document.querySelector('input[name="a_cylinder"]').value;
+      const v = parseFloat((cyl || '').toString().replace(',', '.'));
       const cylNeg = isNaN(v) ? '' : (-Math.abs(v)).toFixed(2);
       return { sphere: parseFloat(sph), cylinder: parseFloat(cylNeg), base: null, addition: null };
     } else {
       return {
-        base: parseFloat(document.querySelector('select[name="d1_base"]').value || ''),
-        addition: parseFloat(document.querySelector('input[name="d1_addition"]').value || ''),
+        base: parseFloat(document.querySelector('select[name="a_base"]').value || ''),
+        addition: parseFloat(document.querySelector('input[name="a_addition"]').value || ''),
         sphere: null, cylinder: null
       };
     }
   }
-  function buildD2() {
-    if (tipoSel.value === 'lente') {
-      const sph = document.querySelector('input[name="d2_sphere"]').value;
-      const cyl = document.querySelector('input[name="d2_cylinder"]').value;
-      const v = parseFloat(cyl.replace(',', '.'));
+  function buildB(tipo) {
+    if (tipo === 'lente') {
+      const sph = document.querySelector('input[name="b_sphere"]').value;
+      const cyl = document.querySelector('input[name="b_cylinder"]').value;
+      const v = parseFloat((cyl || '').toString().replace(',', '.'));
       const cylNeg = isNaN(v) ? '' : (-Math.abs(v)).toFixed(2);
       return { sphere: parseFloat(sph), cylinder: parseFloat(cylNeg), base: null, addition: null };
     } else {
       return {
-        base: parseFloat(document.querySelector('select[name="d2_base"]').value || ''),
-        addition: parseFloat(document.querySelector('input[name="d2_addition"]').value || ''),
+        base: parseFloat(document.querySelector('select[name="b_base"]').value || ''),
+        addition: parseFloat(document.querySelector('input[name="b_addition"]').value || ''),
         sphere: null, cylinder: null
       };
     }
+  }
+
+  // valida preço contra máximo selecionado
+  function priceOk(price, max) {
+    return typeof price === 'number' && !isNaN(price) && price > 0 && price <= max + 1e-6;
   }
 
   document.getElementById('add_to_list').addEventListener('click', () => {
@@ -377,37 +447,48 @@
     if (!os) { alert('Informe a OS.'); return; }
     const pid = productSelect.value;
     if (!pid) { alert('Selecione um produto.'); return; }
-    if (!suppMain.value) { alert('Selecione o fornecedor (D1).'); return; }
-    const preco1 = parseFloat(document.getElementById('price_main').value || '0');
-    if (!preco1 || preco1 <= 0) { alert('Informe o valor (D1).'); return; }
+    if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
 
-    // Adiciona D1
+    const tipo = tipoSel.value;
+    const precoA = parseFloat(document.getElementById('price_main').value || '0');
+    const maxA = getSelectedMax(suppMain);
+    if (!priceOk(precoA, maxA)) {
+      alert(`Valor (A) inválido ou acima do máximo (R$ ${maxA.toFixed(2)}).`);
+      return;
+    }
+
+    // A
     addRow({
-      os, tipo: tipoSel.value,
+      os, tipo, slot: 'A',
       produto: currentProductName(),
       fornecedor: currentSupplierName(suppMain),
-      d: buildD1(),
-      preco: preco1
+      d: buildA(tipo),
+      preco: precoA
     });
 
-    // Se for par
+    // B se par
     const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
     if (isPar) {
       let fornecedor2 = currentSupplierName(suppMain);
-      let preco2 = preco1;
+      let precoB = precoA;
+      let maxB = maxA;
       if (supplierDistinto.checked) {
-        if (!suppSecond.value) { alert('Selecione o fornecedor (D2).'); return; }
+        if (!suppSecond.value) { alert('Selecione o fornecedor (B).'); return; }
         fornecedor2 = currentSupplierName(suppSecond);
-        const p2 = parseFloat(document.getElementById('price_second').value || '0');
-        if (!p2 || p2 <= 0) { alert('Informe o valor (D2).'); return; }
-        preco2 = p2;
+        maxB = getSelectedMax(suppSecond);
+        const v = parseFloat(document.getElementById('price_second').value || '0');
+        if (!priceOk(v, maxB)) {
+          alert(`Valor (B) inválido ou acima do máximo (R$ ${maxB.toFixed(2)}).`);
+          return;
+        }
+        precoB = v;
       }
       addRow({
-        os, tipo: tipoSel.value,
+        os, tipo, slot: 'B',
         produto: currentProductName(),
         fornecedor: fornecedor2,
-        d: buildD2(),
-        preco: preco2
+        d: buildB(tipo),
+        preco: precoB
       });
     }
     recomputeTotal();
@@ -419,7 +500,7 @@
   });
 
   document.getElementById('pedidoForm').addEventListener('submit', () => {
-    // Submissão padrão — backend valida e grava
+    // submissão normal; backend valida novamente
   });
 
   // Inicializações
@@ -427,6 +508,8 @@
     syncTipo();
     syncPairFields();
     table.style.display = 'none';
+    rebuildCodeDatalist();
+    disableWheelOnNumberInputs();
   }
   init();
 </script>
