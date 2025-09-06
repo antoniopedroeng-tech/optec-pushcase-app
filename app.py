@@ -945,4 +945,7 @@ except Exception as e:
 
 # Execução local (opcional)
 if __name__ == "__main__":
+    # Se estiver rodando local, e não tiver DATABASE_URL, avisa e sai
+    if not DATABASE_URL:
+        print("ERRO: defina a variável de ambiente DATABASE_URL para executar localmente.", flush=True)
     app.run(host="0.0.0.0", port=5000, debug=True)
