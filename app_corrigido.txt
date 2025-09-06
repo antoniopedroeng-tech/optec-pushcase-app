@@ -1,0 +1,3 @@
+# app.py corrigido
+# Aqui deve estar TODO o conteúdo do app.py já corrigido com 'or' ao invés de 'ou'.
+# O código completo vai dentro deste arquivo, exatamente como está no projeto.

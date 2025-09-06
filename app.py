@@ -1,950 +1,778 @@
+# app.py
 import os
-import io
 import csv
-from datetime import datetime, date, timedelta
-from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash, send_file
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+import io
+from datetime import datetime, date
+from collections import defaultdict
 
-APP_NAME = "OPTEC PUSHCASE APP"
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
-DATABASE_URL = os.environ.get("DATABASE_URL")  # fornecido pelo Render Postgres
-TIMEZONE_TZ = os.environ.get("TZ", "America/Fortaleza")
+from flask import (
+    Flask, request, redirect, url_for, render_template_string,
+    session, flash, jsonify, send_file
+)
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import UniqueConstraint, inspect, text
 
-# SQLAlchemy Engine / Session
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
+# -----------------------------------------------------------------------------
+# Configuração
+# -----------------------------------------------------------------------------
 app = Flask(__name__)
-app.secret_key = SECRET_KEY
 
-# ============================ DB INIT ============================
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-in-prod")
+DB_URL = os.environ.get("DATABASE_URL", "sqlite:///dados.db")
+if DB_URL.startswith("postgres://"):
+    # Render antigo usa "postgres://", SQLAlchemy espera "postgresql://"
+    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+app.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-def init_db():
-    ddl = """
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('admin','comprador','pagador')),
-      created_at TIMESTAMP NOT NULL
-    );
+# Credenciais simples via ENV (defina no Render)
+COMPRADOR_USER = os.environ.get("COMPRADOR_USER", "comprador")
+COMPRADOR_PASS = os.environ.get("COMPRADOR_PASS", "123")
+PAGADOR_USER = os.environ.get("PAGADOR_USER", "pagador")
+PAGADOR_PASS = os.environ.get("PAGADOR_PASS", "123")
 
-    CREATE TABLE IF NOT EXISTS suppliers (
-      id SERIAL PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1
-    );
+db = SQLAlchemy(app)
 
-    CREATE TABLE IF NOT EXISTS products (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      code TEXT,
-      kind TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      in_stock INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(name, kind)
-    );
+# -----------------------------------------------------------------------------
+# Modelos
+# -----------------------------------------------------------------------------
+class Fornecedor(db.Model):
+    __tablename__ = "fornecedores"
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(120), unique=True, nullable=False)
 
-    CREATE TABLE IF NOT EXISTS rules (
-      id SERIAL PRIMARY KEY,
-      product_id INTEGER NOT NULL REFERENCES products(id),
-      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
-      max_price DOUBLE PRECISION NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      UNIQUE(product_id, supplier_id)
-    );
+    def __repr__(self):
+        return f"<Fornecedor {self.nome}>"
 
-    CREATE TABLE IF NOT EXISTS purchase_orders (
-      id SERIAL PRIMARY KEY,
-      buyer_id INTEGER NOT NULL REFERENCES users(id),
-      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
-      status TEXT NOT NULL CHECK (status IN ('PENDENTE_PAGAMENTO','PAGO','CANCELADO')),
-      total DOUBLE PRECISION NOT NULL,
-      note TEXT,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL
-    );
 
-    CREATE TABLE IF NOT EXISTS purchase_items (
-      id SERIAL PRIMARY KEY,
-      order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
-      product_id INTEGER NOT NULL REFERENCES products(id),
-      quantity INTEGER NOT NULL,
-      unit_price DOUBLE PRECISION NOT NULL,
-      sphere DOUBLE PRECISION,
-      cylinder DOUBLE PRECISION,
-      base DOUBLE PRECISION,
-      addition DOUBLE PRECISION,
-      os_number TEXT
-    );
+class Pedido(db.Model):
+    __tablename__ = "pedidos"
+    id = db.Column(db.Integer, primary_key=True)
+    data_criacao = db.Column(db.Date, nullable=False, default=date.today)
+    ordem_servico = db.Column(db.String(64), nullable=False)  # OS do serviço
+    produto = db.Column(db.String(200), nullable=False)
+    quantidade = db.Column(db.Integer, nullable=False, default=1)
+    valor = db.Column(db.Float, nullable=False, default=0.0)  # valor total do item
+    observacao = db.Column(db.String(500), nullable=True)
 
-    DO $$ BEGIN
-      IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_purchase_items_os') THEN
-        EXECUTE 'DROP INDEX idx_purchase_items_os';
-      END IF;
-    EXCEPTION WHEN others THEN
-      NULL;
-    END $$;
+    fornecedor_id = db.Column(db.Integer, db.ForeignKey("fornecedores.id"), nullable=False)
+    fornecedor = db.relationship("Fornecedor", backref="pedidos", lazy=True)
 
-    CREATE TABLE IF NOT EXISTS payments (
-      id SERIAL PRIMARY KEY,
-      order_id INTEGER NOT NULL UNIQUE REFERENCES purchase_orders(id) ON DELETE CASCADE,
-      payer_id INTEGER NOT NULL REFERENCES users(id),
-      method TEXT,
-      reference TEXT,
-      paid_at TIMESTAMP NOT NULL,
-      amount DOUBLE PRECISION NOT NULL
-    );
+    pago = db.Column(db.Boolean, nullable=False, default=False)
+    data_pagamento = db.Column(db.Date, nullable=True)
+    forma_pagamento = db.Column(db.String(30), nullable=True)   # PIX, TED, Boleto etc.
+    comprovante = db.Column(db.String(200), nullable=True)      # opcional: referência/ID
 
-    CREATE TABLE IF NOT EXISTS audit_log (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id),
-      action TEXT NOT NULL,
-      details TEXT,
-      created_at TIMESTAMP NOT NULL
-    );
-    """
-    with engine.begin() as conn:
-        conn.execute(text(ddl))
-        try:
-            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
-        except Exception:
-            pass
-        exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
-        if exists == 0:
-            from werkzeug.security import generate_password_hash
-            conn.execute(
-                text("INSERT INTO users (username, password_hash, role, created_at) VALUES (:u,:p,:r,:c)"),
-                dict(u="admin", p=generate_password_hash("admin123"), r="admin", c=datetime.utcnow())
-            )
+    # Evita duplicidade de OS no cadastro (por padrão única por OS; ajuste se quiser por dia/fornecedor).
+    __table_args__ = (
+        UniqueConstraint("ordem_servico", name="uq_pedidos_os"),
+    )
 
-# Helpers comuns
-def db_all(sql, **params):
-    with engine.connect() as conn:
-        return conn.execute(text(sql), params).mappings().all()
+    def __repr__(self):
+        return f"<Pedido OS={self.ordem_servico} produto={self.produto}>"
 
-def db_one(sql, **params):
-    with engine.connect() as conn:
-        return conn.execute(text(sql), params).mappings().first()
 
-def db_exec(sql, **params):
-    with engine.begin() as conn:
-        conn.execute(text(sql), params)
+# -----------------------------------------------------------------------------
+# Utilitários/Migrações leves
+# -----------------------------------------------------------------------------
+def ensure_minimum_data():
+    """Cria DB e alguns fornecedores iniciais se não existirem."""
+    db.create_all()
 
-def audit(action, details=""):
-    u = current_user()
-    db_exec("INSERT INTO audit_log (user_id, action, details, created_at) VALUES (:uid,:a,:d,:c)",
-            uid=(u["id"] if u else None), a=action, d=details, c=datetime.utcnow())
+    # Migração leve: garantir colunas (caso DB antigo)
+    insp = inspect(db.engine)
+    cols = [c["name"] for c in insp.get_columns("pedidos")]
+    missing = []
+    if "pago" not in cols:
+        missing.append("ADD COLUMN pago BOOLEAN NOT NULL DEFAULT 0")
+    if "data_pagamento" not in cols:
+        missing.append("ADD COLUMN data_pagamento DATE")
+    if "forma_pagamento" not in cols:
+        missing.append("ADD COLUMN forma_pagamento VARCHAR(30)")
+    if "comprovante" not in cols:
+        missing.append("ADD COLUMN comprovante VARCHAR(200)")
+    if missing:
+        with db.engine.begin() as conn:
+            for alter in missing:
+                if db.engine.url.get_backend_name().startswith("sqlite"):
+                    conn.execute(text(f"ALTER TABLE pedidos {alter}"))
+                else:
+                    conn.execute(text(f"ALTER TABLE pedidos {alter}"))
 
-# ============================ AUTH/CTX ============================
+    if Fornecedor.query.count() == 0:
+        for nome in ["Essilor", "Zeiss", "Hoya", "Saturn", "Transitions", "Outros"]:
+            db.session.add(Fornecedor(nome=nome))
+        db.session.commit()
 
-def current_user():
-    uid = session.get("user_id")
-    if not uid:
-        return None
-    u = db_one("SELECT * FROM users WHERE id=:id", id=uid)
-    return u
 
-def require_role(*roles):
-    u = current_user()
-    if not u or u["role"] not in roles:
-        flash("Acesso negado.", "error")
-        return redirect(url_for("index"))
+@app.before_first_request
+def init_app():
+    ensure_minimum_data()
 
-@app.context_processor
-def inject_globals():
-    return {"now": datetime.utcnow(), "role": session.get("role"), "user": current_user(), "app_name": APP_NAME}
 
-# ============================ RELATÓRIOS (Excel in-memory) ============================
+def require_role(role):
+    def wrapper(fn):
+        def inner(*args, **kwargs):
+            if session.get("role") != role:
+                flash("Acesso negado para este perfil.", "danger")
+                return redirect(url_for("index"))
+            return fn(*args, **kwargs)
+        # Preserva nome para debug
+        inner.__name__ = fn.__name__
+        return inner
+    return wrapper
 
-def build_excel_bytes_for_day(day_str: str) -> bytes:
-    rows = db_all("""
-        SELECT
-            s.name  AS fornecedor,
-            p.name  AS produto,
-            p.in_stock AS in_stock,
-            i.sphere, i.cylinder, i.base, i.addition,
-            i.quantity, i.unit_price,
-            DATE(pay.paid_at) AS data
-        FROM payments pay
-        JOIN purchase_orders o ON o.id = pay.order_id
-        JOIN suppliers s       ON s.id = o.supplier_id
-        JOIN purchase_items i  ON i.order_id = o.id
-        JOIN products p        ON p.id = i.product_id
-        WHERE DATE(pay.paid_at) = :day
-        ORDER BY s.name, p.name
-    """, day=day_str)
 
-    from openpyxl import Workbook
-    from openpyxl.utils import get_column_letter
-    from openpyxl.styles import Font
+# -----------------------------------------------------------------------------
+# Rotas: Autenticação simples por papel
+# -----------------------------------------------------------------------------
+@app.route("/", methods=["GET"])
+def index():
+    role = session.get("role")
+    return render_template_string(TEMPLATE_INDEX, role=role)
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Pagamentos do Dia"
-    ws.append(["Fornecedor", "Produto", "Estoque", "Dioptria", "Data", "Valor"])
 
-    def fmt_dioptria(r):
-        if r["sphere"] is not None or r["cylinder"] is not None:
-            esf = f"{r['sphere']:+.2f}" if r["sphere"] is not None else "-"
-            cil = f"{r['cylinder']:+.2f}" if r["cylinder"] is not None else "-"
-            return f"Esf {esf} / Cil {cil}"
-        else:
-            b = f"{r['base']:.2f}" if r["base"] is not None else "-"
-            add = f"+{r['addition']:.2f}" if r["addition"] is not None else "-"
-            return f"Base {b} / Adição {add}"
-
-    grand_total = 0.0
-    for r in rows:
-        subtotal = float(r["quantity"] or 0) * float(r["unit_price"] or 0.0)
-        grand_total += subtotal
-        ws.append([
-            r["fornecedor"],
-            r["produto"],
-            "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
-            fmt_dioptria(r),
-            r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"]),
-            float(f"{subtotal:.2f}")
-        ])
-
-    ws.append(["", "", "", "", "", ""])
-    ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
-    ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
-    ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
-
-    for i, w in enumerate([18, 28, 12, 26, 12, 14], 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return bio.getvalue()
-
-# ============================ ROTAS ============================
-
-@app.route("/login", methods=["GET","POST"])
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        from werkzeug.security import check_password_hash
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        u = db_one("SELECT * FROM users WHERE username=:u", u=username)
-        if u and check_password_hash(u["password_hash"], password):
-            session["user_id"] = u["id"]; session["role"] = u["role"]
-            flash(f"Bem-vindo, {u['username']}!", "success"); audit("login", f"user={u['username']}")
-            return redirect(url_for("index"))
-        flash("Credenciais inválidas", "error")
-    return render_template("login.html")
+        usuario = request.form.get("usuario", "").strip()
+        senha = request.form.get("senha", "").strip()
+        if usuario == COMPRADOR_USER and senha == COMPRADOR_PASS:
+            session["role"] = "comprador"
+            flash("Login efetuado como COMPRADOR.", "success")
+            return redirect(url_for("comprador"))
+        if usuario == PAGADOR_USER and senha == PAGADOR_PASS:
+            session["role"] = "pagador"
+            flash("Login efetuado como PAGADOR.", "success")
+            return redirect(url_for("pagador"))
+        flash("Usuário ou senha inválidos.", "danger")
+    return render_template_string(TEMPLATE_LOGIN)
+
 
 @app.route("/logout")
 def logout():
-    u = current_user(); session.clear(); flash("Sessão encerrada.", "info"); audit("logout", f"user={u['username'] if u else ''}")
-    return redirect(url_for("login"))
+    session.clear()
+    flash("Sessão encerrada.", "info")
+    return redirect(url_for("index"))
 
-@app.route("/")
-def index():
-    return render_template("index.html")
 
-# -------- Admin: Usuários --------
-
-@app.route("/admin/users")
-def admin_users():
-    if require_role("admin"): return require_role("admin")
-    users = db_all("SELECT id, username, role, created_at FROM users ORDER BY id")
-    return render_template("admin_users.html", users=users)
-
-@app.route("/admin/users/create", methods=["POST"])
-def admin_users_create():
-    if require_role("admin"): return require_role("admin")
-    username = (request.form.get("username") or "").strip()
-    password = request.form.get("password") or ""
-    role = request.form.get("role") or "comprador"
-    if not username or not password or role not in ("admin","comprador","pagador"):
-        flash("Dados inválidos.", "error"); return redirect(url_for("admin_users"))
-    from werkzeug.security import generate_password_hash
-    try:
-        db_exec("INSERT INTO users (username, password_hash, role, created_at) VALUES (:u,:p,:r,:c)",
-                u=username, p=generate_password_hash(password), r=role, c=datetime.utcnow())
-        audit("user_create", f"{username}/{role}"); flash("Usuário criado.", "success")
-    except Exception:
-        flash("Usuário já existe.", "error")
-    return redirect(url_for("admin_users"))
-
-@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
-def admin_users_delete(uid):
-    if require_role("admin"): return require_role("admin")
-    if uid == session.get("user_id"):
-        flash("Não é possível excluir o próprio usuário logado.", "error"); return redirect(url_for("admin_users"))
-    db_exec("DELETE FROM users WHERE id=:id", id=uid)
-    audit("user_delete", f"id={uid}"); flash("Usuário removido.", "info"); return redirect(url_for("admin_users"))
-
-# -------- Admin: Fornecedores --------
-
-@app.route("/admin/suppliers")
-def admin_suppliers():
-    if require_role("admin"): return require_role("admin")
-    suppliers = db_all("SELECT * FROM suppliers ORDER BY name")
-    return render_template("admin_suppliers.html", suppliers=suppliers)
-
-@app.route("/admin/suppliers/create", methods=["POST"])
-def admin_suppliers_create():
-    if require_role("admin"): return require_role("admin")
-    name = (request.form.get("name") or "").strip()
-    if not name: flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
-    try:
-        db_exec("INSERT INTO suppliers (name, active) VALUES (:n,1)", n=name)
-        audit("supplier_create", name); flash("Fornecedor criado.", "success")
-    except Exception:
-        flash("Fornecedor já existe.", "error")
-    return redirect(url_for("admin_suppliers"))
-
-@app.route("/admin/suppliers/<int:sid>/toggle", methods=["POST"])
-def admin_suppliers_toggle(sid):
-    if require_role("admin"): return require_role("admin")
-    s = db_one("SELECT * FROM suppliers WHERE id=:id", id=sid)
-    if not s: flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
-    new_active = 0 if s["active"] else 1
-    db_exec("UPDATE suppliers SET active=:a WHERE id=:id", a=new_active, id=sid)
-    audit("supplier_toggle", f"id={sid} active={new_active}"); return redirect(url_for("admin_suppliers"))
-
-@app.route("/admin/suppliers/<int:sid>/delete", methods=["POST"])
-def admin_suppliers_delete(sid):
-    if require_role("admin"): return require_role("admin")
-    used_rule = db_one("SELECT 1 FROM rules WHERE supplier_id=:id LIMIT 1", id=sid)
-    used_order = db_one("SELECT 1 FROM purchase_orders WHERE supplier_id=:id LIMIT 1", id=sid)
-    if used_rule ou used_order:
-        flash("Não é possível excluir: fornecedor em uso (regras ou pedidos).", "error")
-        return redirect(url_for("admin_suppliers"))
-    db_exec("DELETE FROM suppliers WHERE id=:id", id=sid)
-    audit("supplier_delete", f"id={sid}")
-    flash("Fornecedor excluído.", "success")
-    return redirect(url_for("admin_suppliers"))
-
-# -------- Admin: Produtos --------
-
-@app.route("/admin/products")
-def admin_products():
-    if require_role("admin"): return require_role("admin")
-    products = db_all("SELECT * FROM products ORDER BY kind, name")
-    return render_template("admin_products.html", products=products)
-
-@app.route("/admin/products/create", methods=["POST"])
-def admin_products_create():
-    if require_role("admin"): return require_role("admin")
-    name = (request.form.get("name") or "").strip()
-    code = (request.form.get("code") or "").strip()
-    kind = (request.form.get("kind") or "lente").lower()
-    in_stock = 1 if (request.form.get("in_stock") in ("on","1","true","True")) else 0
-    if kind not in ("lente","bloco") or not name:
-        flash("Dados inválidos.", "error"); return redirect(url_for("admin_products"))
-    try:
-        db_exec(
-            "INSERT INTO products (name, code, kind, in_stock, active) "
-            "VALUES (:n,:c,:k,:instock,1)",
-            n=name, c=code, k=kind, instock=in_stock
+# -----------------------------------------------------------------------------
+# Rotas: COMPRADOR
+# -----------------------------------------------------------------------------
+@app.route("/comprador", methods=["GET"])
+@require_role("comprador")
+def comprador():
+    fornecedores = Fornecedor.query.order_by(Fornecedor.nome.asc()).all()
+    q = request.args.get("q", "").strip()
+    base_query = Pedido.query
+    if q:
+        like = f"%{q}%"
+        base_query = base_query.filter(
+            db.or_(
+                Pedido.ordem_servico.ilike(like),
+                Pedido.produto.ilike(like),
+                Pedido.observacao.ilike(like),
+            )
         )
-        audit("product_create", f"{name}/{kind}/in_stock={in_stock}"); flash("Produto criado.", "success")
-    except Exception:
-        flash("Produto já existe para este tipo.", "error")
-    return redirect(url_for("admin_products"))
+    pedidos = base_query.order_by(Pedido.id.desc()).limit(200).all()
+    return render_template_string(TEMPLATE_COMPRADOR, fornecedores=fornecedores, pedidos=pedidos, q=q)
 
-@app.route("/admin/products/<int:pid>/toggle", methods=["POST"])
-def admin_products_toggle(pid):
-    if require_role("admin"): return require_role("admin")
-    p = db_one("SELECT * FROM products WHERE id=:id", id=pid)
-    if not p: flash("Produto não encontrado.", "error"); return redirect(url_for("admin_products"))
-    new_active = 0 if p["active"] else 1
-    db_exec("UPDATE products SET active=:a WHERE id=:id", a=new_active, id=pid)
-    audit("product_toggle", f"id={pid} active={new_active}"); return redirect(url_for("admin_products"))
 
-@app.route("/admin/products/<int:pid>/delete", methods=["POST"])
-def admin_products_delete(pid):
-    if require_role("admin"): return require_role("admin")
-    used_rule = db_one("SELECT 1 FROM rules WHERE product_id=:id LIMIT 1", id=pid)
-    used_item = db_one("SELECT 1 FROM purchase_items WHERE product_id=:id LIMIT 1", id=pid)
-    if used_rule or used_item:
-        flash("Não é possível excluir: produto em uso (regras ou pedidos).", "error")
-        return redirect(url_for("admin_products"))
-    db_exec("DELETE FROM products WHERE id=:id", id=pid)
-    audit("product_delete", f"id={pid}")
-    flash("Produto excluído.", "success")
-    return redirect(url_for("admin_products"))
-
-# -------- Admin: Regras --------
-
-@app.route("/admin/rules")
-def admin_rules():
-    if require_role("admin"): return require_role("admin")
-    rules = db_all("""
-        SELECT r.id, r.max_price, r.active,
-               p.name as product_name, p.kind as product_kind, p.id as product_id,
-               s.name as supplier_name, s.id as supplier_id
-        FROM rules r
-        JOIN products p ON p.id = r.product_id
-        JOIN suppliers s ON s.id = r.supplier_id
-        ORDER BY p.kind, p.name, s.name
-    """)
-    products = db_all("SELECT * FROM products WHERE active=1 ORDER BY kind, name")
-    suppliers = db_all("SELECT * FROM suppliers WHERE active=1 ORDER BY name")
-    return render_template("admin_rules.html", rules=rules, products=products, suppliers=suppliers)
-
-@app.route("/admin/rules/create", methods=["POST"])
-def admin_rules_create():
-    if require_role("admin"): return require_role("admin")
-    product_id = request.form.get("product_id", type=int)
-    supplier_id = request.form.get("supplier_id", type=int)
-    max_price = request.form.get("max_price", type=float)
-    if not product_id or not supplier_id or max_price is None:
-        flash("Dados inválidos.", "error"); return redirect(url_for("admin_rules"))
+@app.route("/comprador/adicionar", methods=["POST"])
+@require_role("comprador")
+def comprador_adicionar():
     try:
-        db_exec("INSERT INTO rules (product_id, supplier_id, max_price, active) VALUES (:p,:s,:m,1)",
-                p=product_id, s=supplier_id, m=max_price)
-        audit("rule_create", f"product={product_id} supplier={supplier_id} max={max_price}"); flash("Regra criada.", "success")
+        os_num = request.form.get("ordem_servico", "").strip()
+        produto = request.form.get("produto", "").strip()
+        quantidade = int(request.form.get("quantidade", "1") or "1")
+        valor = float(str(request.form.get("valor", "0")).replace(",", ".") or "0")
+        fornecedor_id = int(request.form.get("fornecedor_id"))
+        observacao = request.form.get("observacao", "").strip()
+
+        if not os_num or not produto:
+            flash("Informe Ordem de Serviço e Produto.", "warning")
+            return redirect(url_for("comprador"))
+
+        # Checa duplicidade de OS (regra: OS única na tabela)
+        existente = Pedido.query.filter_by(ordem_servico=os_num).first()
+        if existente:
+            flash(f"OS {os_num} já cadastrada (produto: {existente.produto}). Operação bloqueada.", "danger")
+            return redirect(url_for("comprador"))
+
+        ped = Pedido(
+            data_criacao=date.today(),
+            ordem_servico=os_num,
+            produto=produto,
+            quantidade=quantidade,
+            valor=valor,
+            fornecedor_id=fornecedor_id,
+            observacao=observacao,
+        )
+        db.session.add(ped)
+        db.session.commit()
+        flash("Pedido incluído com sucesso.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Erro ao adicionar: {e}", "danger")
+    return redirect(url_for("comprador"))
+
+
+@app.route("/comprador/remover/<int:pedido_id>", methods=["POST"])
+@require_role("comprador")
+def comprador_remover(pedido_id):
+    ped = Pedido.query.get_or_404(pedido_id)
+    if ped.pago:
+        flash("Não é possível remover um pedido já pago.", "warning")
+        return redirect(url_for("comprador"))
+    db.session.delete(ped)
+    db.session.commit()
+    flash("Pedido removido.", "info")
+    return redirect(url_for("comprador"))
+
+
+# -----------------------------------------------------------------------------
+# Rotas: PAGADOR
+# -----------------------------------------------------------------------------
+@app.route("/pagador", methods=["GET"])
+@require_role("pagador")
+def pagador():
+    # Lista em aberto agrupado por fornecedor
+    pendentes = Pedido.query.filter_by(pago=False).order_by(Pedido.fornecedor_id.asc(), Pedido.id.desc()).all()
+    grupos = defaultdict(list)
+    total_por_forn = defaultdict(float)
+    for p in pendentes:
+        grupos[p.fornecedor.nome].append(p)
+        total_por_forn[p.fornecedor.nome] += (p.valor or 0.0)
+    total_geral = sum(total_por_forn.values())
+    return render_template_string(TEMPLATE_PAGADOR, grupos=grupos, total_por_forn=total_por_forn, total_geral=total_geral)
+
+
+@app.route("/pagador/pagar/<int:pedido_id>", methods=["POST"])
+@require_role("pagador")
+def pagador_pagar(pedido_id):
+    ped = Pedido.query.get_or_404(pedido_id)
+    if ped.pago:
+        flash("Este pedido já está pago.", "info")
+        return redirect(url_for("pagador"))
+
+    forma = request.form.get("forma_pagamento", "PIX").upper()
+    comprovante = request.form.get("comprovante", "").strip()
+    data_pag = request.form.get("data_pagamento", "") or date.today().isoformat()
+
+    try:
+        ped.pago = True
+        ped.forma_pagamento = forma
+        ped.comprovante = comprovante or None
+        ped.data_pagamento = datetime.fromisoformat(data_pag).date()
+        db.session.commit()
+        flash(f"Pagamento registrado (OS {ped.ordem_servico}).", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Erro ao registrar pagamento: {e}", "danger")
+
+    return redirect(url_for("pagador"))
+
+
+# -----------------------------------------------------------------------------
+# Relatórios
+# -----------------------------------------------------------------------------
+@app.route("/relatorio", methods=["GET"])
+def relatorio():
+    # Acesso: comprador ou pagador
+    if session.get("role") not in ("comprador", "pagador"):
+        flash("Faça login para ver relatórios.", "warning")
+        return redirect(url_for("index"))
+
+    data_str = request.args.get("data", date.today().isoformat())
+    try:
+        d = datetime.fromisoformat(data_str).date()
     except Exception:
-        flash("Essa combinação já existe.", "error")
-    return redirect(url_for("admin_rules"))
+        d = date.today()
 
-@app.route("/admin/rules/<int:rid>/toggle", methods=["POST"])
-def admin_rules_toggle(rid):
-    if require_role("admin"): return require_role("admin")
-    r = db_one("SELECT * FROM rules WHERE id=:id", id=rid)
-    if not r: flash("Regra não encontrada.", "error"); return redirect(url_for("admin_rules"))
-    new_active = 0 if r["active"] else 1
-    db_exec("UPDATE rules SET active=:a WHERE id=:id", a=new_active, id=rid)
-    audit("rule_toggle", f"id={rid} active={new_active}"); return redirect(url_for("admin_rules"))
+    pagos = Pedido.query.filter(
+        Pedido.pago.is_(True),
+        Pedido.data_pagamento == d
+    ).order_by(Pedido.fornecedor_id.asc()).all()
 
-# -------- Importação em massa (ADMIN) --------
+    grupos = defaultdict(list)
+    total_por_forn = defaultdict(float)
+    total_geral = 0.0
 
-@app.route("/admin/import/template.xlsx")
-def admin_import_template():
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
-    from openpyxl.utils import get_column_letter
+    for p in pagos:
+        grupos[p.fornecedor.nome].append(p)
+        total_por_forn[p.fornecedor.nome] += (p.valor or 0.0)
+        total_geral += (p.valor or 0.0)
 
-    wb = Workbook()
+    return render_template_string(TEMPLATE_RELATORIO, d=d, grupos=grupos, total_por_forn=total_por_forn, total_geral=total_geral)
 
-    ws1 = wb.active
-    ws1.title = "Suppliers"
-    ws1.append(["name", "active"])
-    ws1.append(["Fornecedor Exemplo A", 1])
-    ws1.append(["Fornecedor Exemplo B", 1])
-    for cell in ws1[1]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    ws1.column_dimensions[get_column_letter(1)].width = 30
-    ws1.column_dimensions[get_column_letter(2)].width = 10
 
-    ws2 = wb.create_sheet("Products")
-    ws2.append(["name", "code", "kind", "active", "in_stock"])
-    ws2.append(["Lente Asférica 1.67", "LA167", "lente", 1, 0])
-    ws2.append(["Bloco Base 4", "BB4", "bloco", 1, 1])
-    for cell in ws2[1]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    ws2.column_dimensions[get_column_letter(1)].width = 30
-    ws2.column_dimensions[get_column_letter(2)].width = 15
-    ws2.column_dimensions[get_column_letter(3)].width = 12
-    ws2.column_dimensions[get_column_letter(4)].width = 10
-    ws2.column_dimensions[get_column_letter(5)].width = 10
+@app.route("/relatorio/csv", methods=["GET"])
+def relatorio_csv():
+    # Protegido
+    if session.get("role") not in ("comprador", "pagador"):
+        flash("Faça login para exportar relatórios.", "warning")
+        return redirect(url_for("index"))
 
-    ws3 = wb.create_sheet("Rules")
-    ws3.append(["product_name", "product_kind", "supplier_name", "max_price", "active"])
-    ws3.append(["Lente Asférica 1.67", "lente", "Fornecedor Exemplo A", 250.00, 1])
-    ws3.append(["Bloco Base 4", "bloco", "Fornecedor Exemplo B", 80.00, 1])
-    for cell in ws3[1]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    ws3.column_dimensions[get_column_letter(1)].width = 30
-    ws3.column_dimensions[get_column_letter(2)].width = 12
-    ws3.column_dimensions[get_column_letter(3)].width = 30
-    ws3.column_dimensions[get_column_letter(4)].width = 12
-    ws3.column_dimensions[get_column_letter(5)].width = 10
+    data_str = request.args.get("data", date.today().isoformat())
+    try:
+        d = datetime.fromisoformat(data_str).date()
+    except Exception:
+        d = date.today()
 
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return send_file(bio, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                     as_attachment=True, download_name="optec_import_template.xlsx")
+    pagos = Pedido.query.filter(
+        Pedido.pago.is_(True),
+        Pedido.data_pagamento == d
+    ).order_by(Pedido.fornecedor_id.asc()).all()
 
-@app.route("/admin/import", methods=["GET", "POST"])
-def admin_import():
-    if require_role("admin"):
-        return require_role("admin")
+    si = io.StringIO()
+    cw = csv.writer(si, delimiter=";")
+    cw.writerow(["Data Pagamento", "Fornecedor", "OS", "Produto", "Qtd", "Valor", "Forma", "Comprovante", "Observação"])
+    for p in pagos:
+        cw.writerow([
+            p.data_pagamento.isoformat() if p.data_pagamento else "",
+            p.fornecedor.nome,
+            p.ordem_servico,
+            p.produto,
+            p.quantidade,
+            f"{p.valor:.2f}",
+            p.forma_pagamento or "",
+            p.comprovante or "",
+            (p.observacao or "").replace("\n", " ").strip()
+        ])
 
-    report = {"suppliers": {"inserted":0, "updated":0},
-              "products": {"inserted":0, "updated":0},
-              "rules": {"inserted":0, "updated":0},
-              "errors": []}
+    data_bytes = io.BytesIO(si.getvalue().encode("utf-8-sig"))
+    filename = f"relatorio_{d.isoformat()}.csv"
+    return send_file(
+        data_bytes,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename
+    )
 
-    if request.method == "POST":
-        file = request.files.get("file")
-        if not file or file.filename == "":
-            flash("Envie um arquivo .xlsx", "error")
-        else:
-            try:
-                from openpyxl import load_workbook
-                wb = load_workbook(file, data_only=True)
-                with engine.begin() as conn:
-                    # Suppliers
-                    if "Suppliers" in wb.sheetnames:
-                        ws = wb["Suppliers"]
-                        headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-                        def idx(col): return headers.index(col) if col in headers else -1
-                        i_name = idx("name"); i_active = idx("active")
-                        if i_name == -1:
-                            report["errors"].append("Suppliers: coluna obrigatória 'name' não encontrada.")
-                        else:
-                            for row in ws.iter_rows(min_row=2, values_only=True):
-                                if row is None: continue
-                                name = (row[i_name] or "").strip() if row[i_name] else ""
-                                if not name: continue
-                                active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
-                                res = conn.execute(text("""
-                                    INSERT INTO suppliers (name, active)
-                                    VALUES (:n, :a)
-                                    ON CONFLICT (name) DO UPDATE SET active=EXCLUDED.active
-                                    RETURNING (xmax = 0) AS inserted
-                                """), dict(n=name, a=active))
-                                inserted = res.fetchone()[0]
-                                if inserted: report["suppliers"]["inserted"] += 1
-                                else: report["suppliers"]["updated"] += 1
 
-                    # Products
-                    if "Products" in wb.sheetnames:
-                        ws = wb["Products"]
-                        headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-                        def idx(col): return headers.index(col) if col in headers else -1
-                        i_name = idx("name"); i_code = idx("code"); i_kind = idx("kind"); i_active = idx("active"); i_stock = idx("in_stock")
-                        if i_name == -1 or i_kind == -1:
-                            report["errors"].append("Products: colunas obrigatórias 'name' e 'kind' não encontradas.")
-                        else:
-                            for row in ws.iter_rows(min_row=2, values_only=True):
-                                if row is None: continue
-                                name = (row[i_name] or "").strip() if row[i_name] else ""
-                                if not name: continue
-                                code = (row[i_code] or "").strip() if (i_code != -1 and row[i_code]) else ""
-                                kind = (row[i_kind] or "").strip().lower() if row[i_kind] else ""
-                                if kind not in ("lente", "bloco"):
-                                    report["errors"].append(f"Products: kind inválido '{kind}' para '{name}'. Use 'lente' ou 'bloco'.")
-                                    continue
-                                active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
-                                in_stock = int(row[i_stock]) if (i_stock != -1 and row[i_stock] is not None) else 0
-                                res = conn.execute(text("""
-                                    INSERT INTO products (name, code, kind, active, in_stock)
-                                    VALUES (:n, :c, :k, :a, :instock)
-                                    ON CONFLICT (name, kind) DO UPDATE SET code=EXCLUDED.code, active=EXCLUDED.active, in_stock=EXCLUDED.in_stock
-                                    RETURNING (xmax = 0) AS inserted
-                                """), dict(n=name, c=code, k=kind, a=active, instock=in_stock))
-                                inserted = res.fetchone()[0]
-                                if inserted: report["products"]["inserted"] += 1
-                                else: report["products"]["updated"] += 1
+# -----------------------------------------------------------------------------
+# APIs simples (para integrações futuras)
+# -----------------------------------------------------------------------------
+@app.route("/api/pedidos", methods=["GET"])
+def api_pedidos():
+    status = request.args.get("status", "todos")
+    q = Pedido.query
+    if status == "pendentes":
+        q = q.filter_by(pago=False)
+    elif status == "pagos":
+        q = q.filter_by(pago=True)
+    itens = q.order_by(Pedido.id.desc()).limit(500).all()
+    return jsonify([serialize_pedido(p) for p in itens])
 
-                    # Rules
-                    if "Rules" in wb.sheetnames:
-                        ws = wb["Rules"]
-                        headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-                        def idx(col): return headers.index(col) if col in headers else -1
-                        i_pn = idx("product_name"); i_pk = idx("product_kind"); i_sn = idx("supplier_name"); i_mp = idx("max_price"); i_active = idx("active")
-                        if i_pn == -1 ou i_pk == -1 ou i_sn == -1 ou i_mp == -1:
-                            report["errors"].append("Rules: colunas obrigatórias 'product_name', 'product_kind', 'supplier_name', 'max_price' não encontradas.")
-                        else:
-                            for row in ws.iter_rows(min_row=2, values_only=True):
-                                if row is None: continue
-                                pn = (row[i_pn] or "").strip() if row[i_pn] else ""
-                                pk = (row[i_pk] or "").strip().lower() if row[i_pk] else ""
-                                sn = (row[i_sn] or "").strip() if row[i_sn] else ""
-                                try:
-                                    mp = float(row[i_mp]) if row[i_mp] is not None else None
-                                except:
-                                    mp = None
-                                if not pn or pk not in ("lente","bloco") or not sn or mp is None:
-                                    report["errors"].append(f"Rules: dados inválidos (produto='{pn}', kind='{pk}', fornecedor='{sn}', max_price='{row[i_mp]}').")
-                                    continue
-                                active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
 
-                                prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
-                                if not prod:
-                                    prod = conn.execute(text("""
-                                        INSERT INTO products (name, code, kind, active)
-                                        VALUES (:n, '', :k, 1)
-                                        ON CONFLICT (name, kind) DO NOTHING
-                                        RETURNING id
-                                    """), dict(n=pn, k=pk)).mappings().first()
-                                    if not prod:
-                                        prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
-                                supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
-                                if not supp:
-                                    supp = conn.execute(text("""
-                                        INSERT INTO suppliers (name, active)
-                                        VALUES (:n, 1)
-                                        ON CONFLICT (name) DO NOTHING
-                                        RETURNING id
-                                    """), dict(n=sn)).mappings().first()
-                                    if not supp:
-                                        supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
+@app.route("/api/pagamentos", methods=["GET"])
+def api_pagamentos():
+    data_str = request.args.get("data")
+    q = Pedido.query.filter_by(pago=True)
+    if data_str:
+        try:
+            d = datetime.fromisoformat(data_str).date()
+            q = q.filter(Pedido.data_pagamento == d)
+        except Exception:
+            pass
+    itens = q.order_by(Pedido.data_pagamento.desc(), Pedido.id.desc()).limit(500).all()
+    return jsonify([serialize_pedido(p) for p in itens])
 
-                                if not prod or not supp:
-                                    report["errors"].append(f"Rules: não foi possível identificar produto/fornecedor ('{pn}'/'{pk}' | '{sn}').")
-                                    continue
 
-                                res = conn.execute(text("""
-                                    INSERT INTO rules (product_id, supplier_id, max_price, active)
-                                    VALUES (:p, :s, :m, :a)
-                                    ON CONFLICT (product_id, supplier_id) DO UPDATE SET max_price=EXCLUDED.max_price, active=EXCLUDED.active
-                                    RETURNING (xmax = 0) AS inserted
-                                """), dict(p=prod["id"], s=supp["id"], m=mp, a=active))
-                                inserted = res.fetchone()[0]
-                                if inserted: report["rules"]["inserted"] += 1
-                                else: report["rules"]["updated"] += 1
+def serialize_pedido(p: Pedido):
+    return {
+        "id": p.id,
+        "data_criacao": p.data_criacao.isoformat() if p.data_criacao else None,
+        "ordem_servico": p.ordem_servico,
+        "produto": p.produto,
+        "quantidade": p.quantidade,
+        "valor": p.valor,
+        "fornecedor": p.fornecedor.nome if p.fornecedor else None,
+        "pago": p.pago,
+        "data_pagamento": p.data_pagamento.isoformat() if p.data_pagamento else None,
+        "forma_pagamento": p.forma_pagamento,
+        "comprovante": p.comprovante,
+        "observacao": p.observacao
+    }
 
-                flash("Importação concluída.", "success")
-            except Exception as e:
-                report["errors"].append(str(e))
-                flash("Falha na importação. Veja os erros.", "error")
 
-    html = """
-    {% extends "base.html" %}
-    {% block title %}Importação em Massa{% endblock %}
-    {% block content %}
-    <div class="container" style="max-width: 800px; margin: 0 auto;">
-      <h2>Importar planilha (Excel .xlsx)</h2>
-      <p>Use o modelo com abas <strong>Suppliers</strong>, <strong>Products</strong> e <strong>Rules</strong>.</p>
-      <p><a href="{{ url_for('admin_import_template') }}">Baixar template Excel</a></p>
-      <form method="post" enctype="multipart/form-data" style="margin-top: 16px;">
-        <input type="file" name="file" accept=".xlsx" required />
-        <button type="submit">Importar</button>
-      </form>
-      {% if report %}
-      <hr/>
-      <h3>Resultado</h3>
-      <ul>
-        <li>Fornecedores: {{ report.suppliers.inserted }} inseridos, {{ report.suppliers.updated }} atualizados</li>
-        <li>Produtos: {{ report.products.inserted }} inseridos, {{ report.products.updated }} atualizados</li>
-        <li>Regras: {{ report.rules.inserted }} inseridos, {{ report.rules.updated }} atualizados</li>
+# -----------------------------------------------------------------------------
+# Templates (Jinja inline para 1 arquivo)
+# -----------------------------------------------------------------------------
+BASE_HEAD = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <title>Sistema de Pedidos & Pagamentos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet">
+  <style>
+    body { padding-top: 70px; }
+    .nowrap { white-space: nowrap; }
+    .small { font-size: 0.9rem; }
+    .table-sm td, .table-sm th { padding: .35rem; }
+  </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="{{ url_for('index') }}">Pedidos & Pagamentos</a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        {% if session.get('role') == 'comprador' %}
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('comprador') }}">Comprador</a></li>
+        {% endif %}
+        {% if session.get('role') == 'pagador' %}
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('pagador') }}">Pagador</a></li>
+        {% endif %}
+        {% if session.get('role') in ('comprador','pagador') %}
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('relatorio') }}">Relatório</a></li>
+        {% endif %}
       </ul>
-      {% if report.errors and report.errors|length > 0 %}
-        <h4>Erros</h4>
-        <ul>
-          {% for e in report.errors %}
-            <li style="color:#b00">{{ e }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
+      <ul class="navbar-nav">
+        {% if session.get('role') %}
+        <li class="nav-item"><span class="navbar-text text-white me-3">Perfil: {{ session.get('role')|capitalize }}</span></li>
+        <li class="nav-item"><a class="btn btn-outline-light btn-sm" href="{{ url_for('logout') }}">Sair</a></li>
+        {% else %}
+        <li class="nav-item"><a class="btn btn-outline-light btn-sm" href="{{ url_for('login') }}">Entrar</a></li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+</nav>
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="mt-2">
+      {% for category, msg in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+          {{ msg }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block conteudo %}{% endblock %}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body></html>
+"""
+
+TEMPLATE_INDEX = """
+{% extends none %}
+""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+{% block conteudo %}
+  <div class="p-4 bg-light rounded">
+    <h1 class="h3 mb-3">Bem-vindo</h1>
+    {% if role %}
+      <p>Você está logado como <strong>{{ role }}</strong>.</p>
+      <p class="mb-0">
+        {% if role == 'comprador' %}
+          <a class="btn btn-primary" href="{{ url_for('comprador') }}">Ir para Comprador</a>
+        {% elif role == 'pagador' %}
+          <a class="btn btn-primary" href="{{ url_for('pagador') }}">Ir para Pagador</a>
+        {% endif %}
+      </p>
+    {% else %}
+      <p>Entre com seu perfil para começar.</p>
+      <a class="btn btn-primary" href="{{ url_for('login') }}">Fazer Login</a>
+    {% endif %}
+  </div>
+{% endblock %}
+""")
+
+TEMPLATE_LOGIN = """
+{% extends none %}
+""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+{% block conteudo %}
+  <div class="row justify-content-center">
+    <div class="col-md-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h1 class="h4 mb-3">Login</h1>
+          <form method="post" autocomplete="off">
+            <div class="mb-3">
+              <label class="form-label">Usuário</label>
+              <input name="usuario" class="form-control" placeholder="comprador ou pagador" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Senha</label>
+              <input name="senha" type="password" class="form-control" required>
+            </div>
+            <button class="btn btn-primary w-100">Entrar</button>
+            <div class="form-text mt-2">
+              Dica (dev): usuário/senha padrão: comprador/123 ou pagador/123 (ajuste por ENV).
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+""")
+
+TEMPLATE_COMPRADOR = """
+{% extends none %}
+""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+{% block conteudo %}
+  <div class="row g-3">
+    <div class="col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h5 mb-3">Nova solicitação de compra</h2>
+          <form method="post" action="{{ url_for('comprador_adicionar') }}">
+            <div class="mb-2">
+              <label class="form-label">Ordem de Serviço (OS) *</label>
+              <input name="ordem_servico" class="form-control" required>
+              <div class="form-text">OS é única. Se repetir, o sistema bloqueia.</div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Produto *</label>
+              <input name="produto" class="form-control" required>
+            </div>
+            <div class="row">
+              <div class="col-4 mb-2">
+                <label class="form-label">Quantidade</label>
+                <input name="quantidade" type="number" min="1" value="1" class="form-control">
+              </div>
+              <div class="col-8 mb-2">
+                <label class="form-label">Valor total (R$)</label>
+                <input name="valor" inputmode="decimal" class="form-control" placeholder="0,00">
+              </div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Fornecedor</label>
+              <select name="fornecedor_id" class="form-select">
+                {% for f in fornecedores %}
+                  <option value="{{ f.id }}">{{ f.nome }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Observação</label>
+              <textarea name="observacao" class="form-control" rows="2"></textarea>
+            </div>
+            <button class="btn btn-primary">Adicionar</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h2 class="h5 mb-0">Pedidos cadastrados (últimos)</h2>
+            <form class="d-flex" method="get" action="{{ url_for('comprador') }}">
+              <input class="form-control form-control-sm me-2" name="q" value="{{ q }}" placeholder="Buscar por OS/Produto/Obs">
+              <button class="btn btn-outline-secondary btn-sm">Buscar</button>
+            </form>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th>#</th>
+                  <th>Data</th>
+                  <th>OS</th>
+                  <th>Produto</th>
+                  <th class="text-end">Qtd</th>
+                  <th class="text-end">Valor</th>
+                  <th>Fornecedor</th>
+                  <th>Status</th>
+                  <th class="text-end">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for p in pedidos %}
+                <tr>
+                  <td>{{ p.id }}</td>
+                  <td class="nowrap">{{ p.data_criacao.strftime('%d/%m/%Y') }}</td>
+                  <td class="nowrap">{{ p.ordem_servico }}</td>
+                  <td>{{ p.produto }}</td>
+                  <td class="text-end">{{ p.quantidade }}</td>
+                  <td class="text-end">{{ 'R$ {:.2f}'.format(p.valor or 0) }}</td>
+                  <td>{{ p.fornecedor.nome }}</td>
+                  <td>
+                    {% if p.pago %}
+                      <span class="badge bg-success">Pago</span>
+                    {% else %}
+                      <span class="badge bg-warning text-dark">Pendente</span>
+                    {% endif %}
+                  </td>
+                  <td class="text-end">
+                    {% if not p.pago %}
+                      <form method="post" action="{{ url_for('comprador_remover', pedido_id=p.id) }}" onsubmit="return confirm('Remover este pedido?')">
+                        <button class="btn btn-sm btn-outline-danger">Remover</button>
+                      </form>
+                    {% else %}
+                      <span class="text-muted small">—</span>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="9" class="text-center text-muted">Nenhum pedido.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="small text-muted">* A duplicidade por OS é bloqueada no cadastro.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+""")
+
+TEMPLATE_PAGADOR = """
+{% extends none %}
+""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+{% block conteudo %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h2 class="h5">Pagamentos pendentes</h2>
+      {% if grupos %}
+        {% for fornecedor, itens in grupos.items() %}
+          <h3 class="h6 mt-4">{{ fornecedor }}</h3>
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th>#</th>
+                  <th>Data</th>
+                  <th>OS</th>
+                  <th>Produto</th>
+                  <th class="text-end">Qtd</th>
+                  <th class="text-end">Valor</th>
+                  <th>Obs</th>
+                  <th class="text-center">Pagar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for p in itens %}
+                <tr>
+                  <td>{{ p.id }}</td>
+                  <td class="nowrap">{{ p.data_criacao.strftime('%d/%m/%Y') }}</td>
+                  <td class="nowrap">{{ p.ordem_servico }}</td>
+                  <td>{{ p.produto }}</td>
+                  <td class="text-end">{{ p.quantidade }}</td>
+                  <td class="text-end">{{ 'R$ {:.2f}'.format(p.valor or 0) }}</td>
+                  <td class="small">{{ p.observacao }}</td>
+                  <td class="text-center">
+                    <form method="post" action="{{ url_for('pagador_pagar', pedido_id=p.id) }}" class="d-flex gap-1">
+                      <input type="date" name="data_pagamento" class="form-control form-control-sm" value="{{ date.today().isoformat() }}">
+                      <select name="forma_pagamento" class="form-select form-select-sm">
+                        <option>PIX</option>
+                        <option>TED</option>
+                        <option>Boleto</option>
+                        <option>Dinheiro</option>
+                        <option>Cartão</option>
+                      </select>
+                      <input name="comprovante" class="form-control form-control-sm" placeholder="Ref/Comprovante (opcional)">
+                      <button class="btn btn-sm btn-success">Baixar</button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+                <tr class="table-secondary">
+                  <td colspan="5"><strong>Total do fornecedor</strong></td>
+                  <td class="text-end"><strong>{{ 'R$ {:.2f}'.format(total_por_forn[fornecedor]) }}</strong></td>
+                  <td colspan="2"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        {% endfor %}
+        <div class="mt-3">
+          <span class="badge bg-primary fs-6">Total geral pendente: {{ 'R$ {:.2f}'.format(total_geral) }}</span>
+        </div>
+      {% else %}
+        <p class="text-muted">Não há pendências de pagamento.</p>
       {% endif %}
     </div>
-    {% endblock %}
-    """
-    return render_template_string(html, report=report)
+  </div>
+{% endblock %}
+""")
 
-# -------- Comprador: Novo Pedido (A/B, filtro por tipo, validação de preço no cliente) --------
+TEMPLATE_RELATORIO = """
+{% extends none %}
+""" + BASE_HEAD.replace("{% block conteudo %}{% endblock %}", """
+{% block conteudo %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="d-flex align-items-end justify-content-between">
+        <div>
+          <h2 class="h5 mb-1">Relatório de pagamentos por fornecedor</h2>
+          <div class="text-muted">Data: <strong>{{ d.strftime('%d/%m/%Y') }}</strong></div>
+        </div>
+        <form class="d-flex" method="get" action="{{ url_for('relatorio') }}">
+          <input type="date" name="data" value="{{ d.isoformat() }}" class="form-control form-control-sm me-2">
+          <button class="btn btn-outline-secondary btn-sm">Aplicar</button>
+        </form>
+      </div>
 
-@app.route("/compras/novo", methods=["GET","POST"])
-def compras_novo():
-    if require_role("comprador","admin"):
-        return require_role("comprador","admin")
+      <div class="mt-3">
+        {% if grupos %}
+          {% for fornecedor, itens in grupos.items() %}
+            <h3 class="h6 mt-3">{{ fornecedor }}</h3>
+            <div class="table-responsive">
+              <table class="table table-sm table-striped">
+                <thead class="table-light">
+                  <tr>
+                    <th>#</th>
+                    <th>OS</th>
+                    <th>Produto</th>
+                    <th class="text-end">Qtd</th>
+                    <th class="text-end">Valor</th>
+                    <th>Forma</th>
+                    <th>Comprovante</th>
+                    <th>Obs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for p in itens %}
+                    <tr>
+                      <td>{{ p.id }}</td>
+                      <td class="nowrap">{{ p.ordem_servico }}</td>
+                      <td>{{ p.produto }}</td>
+                      <td class="text-end">{{ p.quantidade }}</td>
+                      <td class="text-end">{{ 'R$ {:.2f}'.format(p.valor or 0) }}</td>
+                      <td>{{ p.forma_pagamento or '' }}</td>
+                      <td class="small">{{ p.comprovante or '' }}</td>
+                      <td class="small">{{ p.observacao or '' }}</td>
+                    </tr>
+                  {% endfor %}
+                  <tr class="table-secondary">
+                    <td colspan="4"><strong>Total do fornecedor</strong></td>
+                    <td class="text-end"><strong>{{ 'R$ {:.2f}'.format(total_por_forn[fornecedor]) }}</strong></td>
+                    <td colspan="3"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          {% endfor %}
+          <div class="mt-2">
+            <span class="badge bg-primary fs-6">Total geral do dia: {{ 'R$ {:.2f}'.format(total_geral) }}</span>
+          </div>
+          <div class="mt-3">
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('relatorio_csv', data=d.isoformat()) }}">Exportar CSV</a>
+          </div>
+        {% else %}
+          <p class="text-muted">Sem pagamentos para a data selecionada.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}
+""")
 
-    combos = db_all("""
-        SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.code as product_code, p.kind,
-               s.id as supplier_id, s.name as supplier_name, r.max_price
-        FROM rules r
-        JOIN products p ON p.id = r.product_id
-        JOIN suppliers s ON s.id = r.supplier_id
-        WHERE r.active=1 AND p.active=1 AND s.active=1
-        ORDER BY s.name, p.kind, p.name
-    """)
-    products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
-
-    # para tojson no template
-    combos = [dict(r) for r in combos]
-    products = [dict(p) for p in products]
-
-    if request.method == "POST":
-        os_number = (request.form.get("os_number") or "").strip()
-        pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
-        tipo = (request.form.get("tipo") or "").lower()  # 'lente' ou 'bloco'
-        product_id = request.form.get("product_id", type=int)
-        product_code = (request.form.get("product_code") or "").strip()
-        supplier_main = request.form.get("supplier_main", type=int)
-        price_main = request.form.get("price_main", type=float)
-
-        supplier_distinto = request.form.get("supplier_distinto") == "on"
-        supplier_second = request.form.get("supplier_second", type=int) if supplier_distinto else None
-        price_second = request.form.get("price_second", type=float) if supplier_distinto else None
-
-        if not os_number:
-            flash("Informe o número da OS.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-
-        existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
-        existing_n = int(existing["n"] if existing else 0)
-
-        if pair_option not in ("meio","par"):
-            flash("Selecione se é meio par ou um par.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-
-        if tipo not in ("lente","bloco"):
-            flash("Selecione o tipo (lente/bloco).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-
-        # Se não veio product_id, tenta resolver por código e tipo
-        if not product_id and product_code:
-            p = db_one("SELECT id FROM products WHERE code=:c AND kind=:k AND active=1", c=product_code, k=tipo)
-            if p:
-                product_id = int(p["id"])
-
-        if not product_id:
-            flash("Selecione o produto (ou informe um código válido).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-
-        # Regra D1
-        rule_main = db_one("""
-            SELECT r.*, p.kind as product_kind
-            FROM rules r JOIN products p ON p.id = r.product_id
-            WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
-        """, pid=product_id, sid=supplier_main)
-        if not rule_main:
-            flash("Fornecedor principal indisponível para este produto.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-        if price_main is None or price_main <= 0 or price_main > float(rule_main["max_price"]) + 1e-6:
-            flash(f"Preço do item A inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-
-        # Utilitários
-        def _step_ok(x: float) -> bool:
-            return (abs(x * 100) % 25) == 0
-
-        def validate_lente(prefix):
-            sphere = request.form.get(f"{prefix}_sphere", type=float)
-            cylinder_raw = request.form.get(f"{prefix}_cylinder", type=float)
-            cylinder = None
-            if cylinder_raw is not None:
-                cylinder = -abs(cylinder_raw)  # sempre negativo
-            if sphere is None or sphere < -20 or sphere > 20 or not _step_ok(sphere):
-                return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
-            if cylinder is None or cylinder > 0 or cylinder < -15 or not _step_ok(cylinder):
-                return None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
-            return {"sphere": sphere, "cylinder": cylinder, "base": None, "addition": None}, None
-
-        def validate_bloco(prefix):
-            base = request.form.get(f"{prefix}_base", type=float)
-            addition = request.form.get(f"{prefix}_addition", type=float)
-            allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
-            if base is None or base not in allowed_bases:
-                return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
-            if addition is None or addition < 1.0 or addition > 4.0 or not _step_ok(addition):
-                return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
-            return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
-
-        items_to_add = []
-
-        # Item A
-        if tipo == "lente":
-            a, err = validate_lente("a")
-            if err:
-                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
-        else:
-            a, err = validate_bloco("a")
-            if err:
-                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
-        items_to_add.append({"product_id": product_id, "supplier_id": supplier_main, "price": price_main, "d": a})
-
-        # Item B se par
-        if pair_option == "par":
-            if supplier_distinto:
-                if not supplier_second:
-                    flash("Selecione o fornecedor do item B.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
-                rule_second = db_one("""
-                    SELECT r.*, p.kind as product_kind
-                    FROM rules r JOIN products p ON p.id = r.product_id
-                    WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
-                """, pid=product_id, sid=supplier_second)
-                if not rule_second:
-                    flash("Fornecedor do item B indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
-                if price_second is None or price_second <= 0 or price_second > float(rule_second["max_price"]) + 1e-6:
-                    flash(f"Preço do item B inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products)
-            else:
-                supplier_second, price_second = supplier_main, price_main
-
-            if tipo == "lente":
-                b, err = validate_lente("b")
-                if err:
-                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
-            else:
-                b, err = validate_bloco("b")
-                if err:
-                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
-
-            items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": b})
-
-        if existing_n + len(items_to_add) > 2:
-            flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-
-        total = sum([it["price"] for it in items_to_add])
-        with engine.begin() as conn:
-            res = conn.execute(text("""
-                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-                VALUES (:b,:s,'PENDENTE_PAGAMENTO',:t,:n,:c,:u) RETURNING id
-            """), dict(b=session["user_id"], s=items_to_add[0]["supplier_id"], t=total,
-                       n=f"OS {os_number} ({pair_option})", c=datetime.utcnow(), u=datetime.utcnow()))
-            order_id = res.scalar_one()
-            for it in items_to_add:
-                conn.execute(text("""
-                    INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                    VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
-                """), dict(o=order_id, p=it["product_id"], pr=it["price"],
-                           sf=it["d"]["sphere"], cl=it["d"]["cylinder"], ba=it["d"]["base"],
-                           ad=it["d"]["addition"], os=os_number))
-        audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)}")
-        flash("Pedido criado e enviado ao pagador.", "success")
-        return redirect(url_for("compras_lista"))
-
-    return render_template("compras_novo.html", combos=combos, products=products)
-
-# -------- Comprador: lista/detalhe --------
-
-@app.route("/compras")
-def compras_lista():
-    if require_role("comprador","admin"): return require_role("comprador","admin")
-    orders = db_all("""
-        SELECT o.*, s.name as supplier_name
-        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.buyer_id=:b ORDER BY o.id DESC
-    """, b=session["user_id"])
-    return render_template("compras_lista.html", orders=orders)
-
-@app.route("/compras/<int:oid>")
-def compras_detalhe(oid):
-    if require_role("comprador","admin"): return require_role("comprador","admin")
-    order = db_one("""
-        SELECT o.*, s.name as supplier_name
-        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.id=:id
-    """, id=oid)
-    if not order:
-        flash("Pedido não encontrado.", "error"); return redirect(url_for("compras_lista"))
-    if session.get("role") != "admin" and order["buyer_id"] != session.get("user_id"):
-        flash("Acesso negado ao pedido.", "error"); return redirect(url_for("compras_lista"))
-    items = db_all("""
-        SELECT i.*, p.name as product_name, p.kind as product_kind
-        FROM purchase_items i JOIN products p ON p.id = i.product_id
-        WHERE i.order_id=:id ORDER BY i.id
-    """, id=oid)
-    return render_template("compras_detalhe.html", order=order, items=items)
-
-# -------- Pagador --------
-
-@app.route("/pagamentos")
-def pagamentos_lista():
-    if require_role("pagador","admin"): return require_role("pagador","admin")
-    orders = db_all("""
-        SELECT o.*, u.username as buyer_name, s.name as supplier_name
-        FROM purchase_orders o
-        JOIN users u ON u.id = o.buyer_id
-        JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.status='PENDENTE_PAGAMENTO'
-        ORDER BY o.created_at ASC
-    """)
-    return render_template("pagamentos_lista.html", orders=orders)
-
-@app.route("/pagamentos/<int:oid>", methods=["GET","POST"])
-def pagamentos_detalhe(oid):
-    if require_role("pagador","admin"): return require_role("pagador","admin")
-    order = db_one("""
-        SELECT o.*, u.username as buyer_name, s.name as supplier_name
-        FROM purchase_orders o
-        JOIN users u ON u.id = o.buyer_id
-        JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.id=:id
-    """, id=oid)
-    items = db_all("""
-        SELECT i.*, p.name as product_name, p.kind as product_kind
-        FROM purchase_items i JOIN products p ON p.id = i.product_id
-        WHERE i.order_id=:id
-    """, id=oid)
-    if not order:
-        flash("Pedido não encontrado.", "error"); return redirect(url_for("pagamentos_lista"))
-    if request.method == "POST":
-        method = (request.form.get("method") or "PIX").strip()
-        reference = (request.form.get("reference") or "").strip()
-        amount = request.form.get("amount", type=float)
-        if amount is None or amount <= 0:
-            flash("Valor inválido.", "error"); return render_template("pagamentos_detalhe.html", order=order, items=items)
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
-                VALUES (:o,:p,:m,:r,:d,:a)
-            """), dict(o=oid, p=session["user_id"], m=method, r=reference, d=datetime.utcnow(), a=amount))
-            conn.execute(text("UPDATE purchase_orders SET status='PAGO', updated_at=:u WHERE id=:id"),
-                         dict(u=datetime.utcnow(), id=oid))
-        audit("order_paid", f"id={oid} amount={amount}")
-        flash("Pagamento registrado e pedido baixado como PAGO.", "success"); return redirect(url_for("pagamentos_lista"))
-    return render_template("pagamentos_detalhe.html", order=order, items=items)
-
-# -------- Relatórios --------
-
-@app.route("/relatorios")
-def relatorios_index():
-    if require_role("admin","pagador"): return require_role("admin","pagador")
-    ontem = (date.today() - timedelta(days=1)).isoformat()
-    existing = []
-    default_day = ontem
-    return render_template("relatorios.html", existing=existing, default_day=default_day)
-
-@app.route("/relatorios/diario.xlsx")
-def relatorio_diario_xlsx():
-    if require_role("admin","pagador"): return require_role("admin","pagador")
-    # >>> sem esperar 24h: gera com o que tiver pago na data informada <<<
-    day = request.args.get("date") or date.today().isoformat()
-    xbytes = build_excel_bytes_for_day(day)
-    return send_file(io.BytesIO(xbytes),
-                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                     as_attachment=True, download_name=f"pagamentos_{day}.xlsx")
-
-@app.route("/relatorios/diario.csv")
-def relatorio_diario_csv():
-    if require_role("admin","pagador"): return require_role("admin","pagador")
-    target_day = request.args.get("date") or date.today().isoformat()
-    rows = db_all("""
-        SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
-               o.id as order_id, s.name as supplier_name, u.username as payer_name
-        FROM payments pay
-        JOIN purchase_orders o ON o.id = pay.order_id
-        JOIN suppliers s ON s.id = o.supplier_id
-        JOIN users u ON u.id = pay.payer_id
-        WHERE DATE(pay.paid_at)=:day
-        ORDER BY pay.paid_at ASC
-    """, day=target_day)
-    output = io.StringIO(); writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(["paid_at","amount","method","reference","order_id","supplier","payer"])
-    for r in rows:
-        paid_at = r["paid_at"].isoformat(sep=" ", timespec="seconds") if hasattr(r["paid_at"], "isoformat") else str(r["paid_at"])
-        writer.writerow([paid_at, f"{float(r['amount']):.2f}", r["method"], r["reference"], r["order_id"], r["supplier_name"], r["payer_name"]])
-    output.seek(0)
-    return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
-                     as_attachment=True, download_name=f"pagamentos_{target_day}.csv")
-
-# -------- Admin: excluir pedidos --------
-
-@app.route("/admin/orders/<int:oid>/delete", methods=["POST"])
-def admin_orders_delete(oid):
-    if require_role("admin"): return require_role("admin")
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM payments WHERE order_id=:id"), dict(id=oid))
-        conn.execute(text("DELETE FROM purchase_items WHERE order_id=:id"), dict(id=oid))
-        conn.execute(text("DELETE FROM purchase_orders WHERE id=:id"), dict(id=oid))
-    audit("order_delete", f"id={oid}")
-    flash("Pedido excluído.", "success")
-    return redirect(url_for("compras_lista"))
-
-# ============================ BOOTSTRAP ============================
-
-try:
-    init_db()
-except Exception as e:
-    print(f"[BOOT] init_db() falhou: {e}", flush=True)
-
+# -----------------------------------------------------------------------------
+# Execução
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
