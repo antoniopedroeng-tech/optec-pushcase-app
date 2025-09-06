@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Importação em Massa{% endblock %}
+{% block content %}
+<div class="container" style="max-width: 800px; margin: 0 auto;">
+  <h2>Importar planilha (Excel .xlsx)</h2>
+  <p>Use o modelo de planilha com as abas <strong>Suppliers</strong>, <strong>Products</strong> e <strong>Rules</strong>.</p>
+  <p>
+    <a href="https://chat.openai.com" target="_blank">Baixe o template enviado no chat</a> 
+    ou <a href="{{ url_for('admin_import') }}">recarregue esta página</a> após salvar seu arquivo.
+  </p>
+  <form method="post" enctype="multipart/form-data" style="margin-top: 16px;">
+    <input type="file" name="file" accept=".xlsx" required />
+    <button type="submit">Importar</button>
+  </form>
+
+  {% if report %}
+  <hr/>
+  <h3>Resultado</h3>
+  <ul>
+    <li>Fornecedores: {{ report.suppliers.inserted }} inseridos, {{ report.suppliers.updated }} atualizados</li>
+    <li>Produtos: {{ report.products.inserted }} inseridos, {{ report.products.updated }} atualizados</li>
+    <li>Regras: {{ report.rules.inserted }} inseridos, {{ report.rules.updated }} atualizados</li>
+  </ul>
+
+  {% if report.errors and report.errors|length > 0 %}
+    <h4>Erros</h4>
+    <ul>
+      {% for e in report.errors %}
+        <li style="color:#b00">{{ e }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
