@@ -1,320 +1,244 @@
 {% extends "base.html" %}
 {% block title %}Novo Pedido{% endblock %}
+
 {% block content %}
-<style>
-  .row { display:flex; gap:12px; flex-wrap:wrap; }
-  .col { display:flex; flex-direction:column; min-width:220px; flex:1; }
-  label { font-weight:600; margin-top:8px; }
-  input[type="number"]{ text-align:right; }
-  .hint { font-size:12px; color:#666; }
-  .box { border:1px solid #ddd; border-radius:8px; padding:12px; margin-top:12px; }
-  .hidden { display:none !important; }
-</style>
+<div class="container" style="max-width: 980px; margin: 0 auto;">
+  <h2>Novo Pedido</h2>
 
-<h2>Novo Pedido</h2>
+  <form method="post" id="form-novo-pedido">
+    <input type="hidden" name="action" id="action" value="add">
 
-<form method="post" id="pedidoForm">
-  <!-- OS -->
-  <div class="row">
-    <div class="col" style="max-width:260px;">
-      <label for="os_number">OS</label>
-      <input type="text" id="os_number" name="os_number" required placeholder="Número da OS">
-    </div>
-
-    <div class="col" style="max-width:220px;">
-      <label>Quantidade</label>
+    <!-- Ordem: OS, Meio/Par, Tipo, Produto, Fornecedor(s), Dioptrias -->
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
       <div>
-        <label style="font-weight:400; margin-right:12px;">
-          <input type="radio" name="pair_option" value="meio" checked> Meio par
-        </label>
-        <label style="font-weight:400;">
-          <input type="radio" name="pair_option" value="par"> Um par
-        </label>
+        <label><strong>OS</strong></label>
+        <input type="text" name="os_number" class="form-control" required>
       </div>
-    </div>
 
-    <div class="col" style="max-width:220px;">
-      <label for="tipo">Tipo</label>
-      <select id="tipo" name="tipo" required>
-        <option value="">Selecione...</option>
-        <option value="lente">Lente</option>
-        <option value="bloco">Bloco</option>
-      </select>
-    </div>
-  </div>
-
-  <!-- Produto -->
-  <div class="row">
-    <div class="col">
-      <label for="product_id">Produto</label>
-      <select id="product_id" name="product_id" required>
-        <option value="">Selecione...</option>
-        {% for p in products %}
-          <option value="{{ p.id }}" data-kind="{{ p.kind }}">{{ p.name }} ({{ p.kind }})</option>
-        {% endfor %}
-      </select>
-      <div class="hint">A lista de fornecedores será filtrada conforme o produto.</div>
-    </div>
-  </div>
-
-  <!-- Fornecedor/Preço principal -->
-  <div class="box">
-    <h3 style="margin:0 0 8px;">Item 1</h3>
-    <div class="row">
-      <div class="col">
-        <label for="supplier_main">Fornecedor</label>
-        <select id="supplier_main" name="supplier_main" required>
-          <option value="">Selecione um produto acima</option>
-        </select>
-        <div class="hint" id="main_price_hint">Preço máximo: —</div>
-      </div>
-      <div class="col" style="max-width:200px;">
-        <label for="price_main">Valor (R$)</label>
-        <input id="price_main" name="price_main" type="number" step="0.01" min="0" required>
-      </div>
-    </div>
-
-    <!-- Dioptria 1 -->
-    <div id="d1_lente" class="row hidden">
-      <div class="col" style="max-width:200px;">
-        <label for="d1_sphere">Esférico</label>
-        <input id="d1_sphere" name="d1_sphere" type="number" step="0.25" placeholder="-20.00 a +20.00">
-      </div>
-      <div class="col" style="max-width:200px;">
-        <label for="d1_cylinder">Cilíndrico</label>
-        <input id="d1_cylinder" name="d1_cylinder" type="number" step="0.25" placeholder="0.00 a -15.00">
-      </div>
-    </div>
-
-    <div id="d1_bloco" class="row hidden">
-      <div class="col" style="max-width:200px;">
-        <label for="d1_base">Base</label>
-        <select id="d1_base" name="d1_base">
-          <option value="">Selecione...</option>
-          <option>0.5</option><option>1.0</option><option>2.0</option>
-          <option>4.0</option><option>6.0</option><option>8.0</option><option>10.0</option>
+      <div>
+        <label><strong>Quantidade</strong></label>
+        <select name="pair_option" class="form-control" id="pair_option" required>
+          <option value="">— selecione —</option>
+          <option value="meio">Meio par</option>
+          <option value="par">Um par</option>
         </select>
       </div>
-      <div class="col" style="max-width:200px;">
-        <label for="d1_addition">Adição</label>
-        <input id="d1_addition" name="d1_addition" type="number" step="0.25" placeholder="+1.00 a +4.00">
-      </div>
-    </div>
-  </div>
 
-  <!-- Se escolher PAR, mostra Item 2 -->
-  <div id="par_box" class="box hidden">
-    <h3 style="margin:0 0 8px;">Item 2</h3>
-    <div class="row">
-      <div class="col" style="max-width:220px;">
-        <label style="font-weight:400;">
-          <input type="checkbox" id="supplier_distinto" name="supplier_distinto">
-          Fornecedor distinto
-        </label>
-      </div>
-    </div>
-
-    <div class="row">
-      <div class="col">
-        <label for="supplier_second">Fornecedor</label>
-        <select id="supplier_second" name="supplier_second" disabled>
-          <option value="">(Mesmo do item 1)</option>
-        </select>
-        <div class="hint" id="second_price_hint">Preço máximo: —</div>
-      </div>
-      <div class="col" style="max-width:200px;">
-        <label for="price_second">Valor (R$)</label>
-        <input id="price_second" name="price_second" type="number" step="0.01" min="0" disabled placeholder="(Mesmo do item 1)">
-      </div>
-    </div>
-
-    <!-- Dioptria 2 -->
-    <div id="d2_lente" class="row hidden">
-      <div class="col" style="max-width:200px;">
-        <label for="d2_sphere">Esférico</label>
-        <input id="d2_sphere" name="d2_sphere" type="number" step="0.25" placeholder="-20.00 a +20.00">
-      </div>
-      <div class="col" style="max-width:200px;">
-        <label for="d2_cylinder">Cilíndrico</label>
-        <input id="d2_cylinder" name="d2_cylinder" type="number" step="0.25" placeholder="0.00 a -15.00">
-      </div>
-    </div>
-
-    <div id="d2_bloco" class="row hidden">
-      <div class="col" style="max-width:200px;">
-        <label for="d2_base">Base</label>
-        <select id="d2_base" name="d2_base">
-          <option value="">Selecione...</option>
-          <option>0.5</option><option>1.0</option><option>2.0</option>
-          <option>4.0</option><option>6.0</option><option>8.0</option><option>10.0</option>
+      <div>
+        <label><strong>Tipo</strong></label>
+        <select name="tipo" class="form-control" id="tipo" required>
+          <option value="">— selecione —</option>
+          <option value="lente">Lente</option>
+          <option value="bloco">Bloco</option>
         </select>
       </div>
-      <div class="col" style="max-width:200px;">
-        <label for="d2_addition">Adição</label>
-        <input id="d2_addition" name="d2_addition" type="number" step="0.25" placeholder="+1.00 a +4.00">
+
+      <div>
+        <label><strong>Produto</strong></label>
+        <select name="product_id" class="form-control" id="product_id" required>
+          <option value="">— selecione —</option>
+          {% for p in products %}
+            <option value="{{ p.id }}" data-kind="{{ p.kind }}">{{ p.name }} ({{ p.kind }})</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label><strong>Fornecedor (item 1)</strong></label>
+        <select name="supplier_main" class="form-control" id="supplier_main" required>
+          <option value="">— selecione —</option>
+          <!-- preenchido via JS com base no produto -->
+        </select>
+      </div>
+
+      <div>
+        <label><strong>Preço (item 1)</strong></label>
+        <input type="number" step="0.01" name="price_main" class="form-control" required>
       </div>
     </div>
-  </div>
 
-  <div style="margin-top:12px;">
-    <button type="submit">Enviar ao Pagador</button>
-    <a href="{{ url_for('compras_lista') }}" class="button">Cancelar</a>
+    <div style="margin-top:12px;">
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" name="supplier_distinto" id="supplier_distinto">
+        <span>Fornecedor distinto para o segundo item</span>
+      </label>
+    </div>
+
+    <div id="supplier_second_wrap" style="display:none; margin-top:8px; grid-template-columns: 1fr 1fr; gap:12px;" class="grid-2">
+      <div>
+        <label><strong>Fornecedor (item 2)</strong></label>
+        <select name="supplier_second" class="form-control" id="supplier_second">
+          <option value="">— selecione —</option>
+          <!-- preenchido via JS -->
+        </select>
+      </div>
+      <div>
+        <label><strong>Preço (item 2)</strong></label>
+        <input type="number" step="0.01" name="price_second" class="form-control">
+      </div>
+    </div>
+
+    <!-- Dioptrias -->
+    <div id="dioptria_area" style="margin-top:16px;">
+      <!-- LENTE -->
+      <div id="diop_lente" style="display:none;">
+        <div style="display:grid; grid-template-columns: repeat(2,1fr); gap:12px;">
+          <div>
+            <h4>Item 1</h4>
+            <label>Esférico</label>
+            <input type="number" step="0.25" name="d1_sphere" class="form-control">
+            <label style="margin-top:8px;">Cilíndrico</label>
+            <input type="number" step="0.25" name="d1_cylinder" class="form-control">
+          </div>
+          <div id="diop_lente_item2" style="display:none;">
+            <h4>Item 2</h4>
+            <label>Esférico</label>
+            <input type="number" step="0.25" name="d2_sphere" class="form-control">
+            <label style="margin-top:8px;">Cilíndrico</label>
+            <input type="number" step="0.25" name="d2_cylinder" class="form-control">
+          </div>
+        </div>
+      </div>
+
+      <!-- BLOCO -->
+      <div id="diop_bloco" style="display:none;">
+        <div style="display:grid; grid-template-columns: repeat(2,1fr); gap:12px;">
+          <div>
+            <h4>Item 1</h4>
+            <label>Base</label>
+            <select name="d1_base" class="form-control">
+              <option value="">—</option>
+              <option>0.5</option><option>1.0</option><option>2.0</option>
+              <option>4.0</option><option>6.0</option><option>8.0</option><option>10.0</option>
+            </select>
+            <label style="margin-top:8px;">Adição</label>
+            <input type="number" step="0.25" name="d1_addition" class="form-control">
+          </div>
+          <div id="diop_bloco_item2" style="display:none;">
+            <h4>Item 2</h4>
+            <label>Base</label>
+            <select name="d2_base" class="form-control">
+              <option value="">—</option>
+              <option>0.5</option><option>1.0</option><option>2.0</option>
+              <option>4.0</option><option>6.0</option><option>8.0</option><option>10.0</option>
+            </select>
+            <label style="margin-top:8px;">Adição</label>
+            <input type="number" step="0.25" name="d2_addition" class="form-control">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ações -->
+    <div style="margin-top:16px; display:flex; gap:12px;">
+      <button class="btn btn-primary" onclick="setAction('add')">Adicionar à Lista</button>
+      <button class="btn btn-warning" onclick="setAction('clear')">Limpar Lista</button>
+      <button class="btn btn-success" onclick="setAction('submit')">Enviar ao Pagador</button>
+    </div>
+  </form>
+
+  <!-- Lista atual (uma linha por item/unidade) -->
+  <div style="margin-top:24px;">
+    <h3>Lista de envio</h3>
+    {% if cart and cart|length > 0 %}
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>OS</th>
+            <th>Produto</th>
+            <th>Fornecedor</th>
+            <th>Tipo</th>
+            <th>Dioptria</th>
+            <th style="text-align:right;">Valor (R$)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for it in cart %}
+            <tr>
+              <td>{{ it.os_number }}</td>
+              <td>{{ it.product_name }}</td>
+              <td>{{ it.supplier_name }}</td>
+              <td>{{ it.tipo }}</td>
+              <td>
+                {% if it.tipo == 'lente' %}
+                  Esf {{ '%+.2f'|format(it.sphere) }} / Cil {{ '%+.2f'|format(it.cylinder) }}
+                {% else %}
+                  Base {{ '%.2f'|format(it.base) }} / Adição {{ '+%.2f'|format(it.addition) }}
+                {% endif %}
+              </td>
+              <td style="text-align:right;">{{ '%.2f'|format(it.price) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p style="color:#666;">Nenhum item na lista.</p>
+    {% endif %}
   </div>
-</form>
+</div>
 
 <script>
-  // Dados de regras para filtrar fornecedores por produto
-  const combos = [
-    {% for c in combos %}
-      {
-        rule_id: {{ c.rule_id }},
-        product_id: {{ c.product_id }},
-        product_name: {{ c.product_name|tojson }},
-        kind: {{ c.kind|tojson }},
-        supplier_id: {{ c.supplier_id }},
-        supplier_name: {{ c.supplier_name|tojson }},
-        max_price: {{ "%.2f"|format(c.max_price) }}
-      }{{ "," if not loop.last else "" }}
-    {% endfor %}
-  ];
+  const combos = {{ combos|tojson }};
+  const productSelect = document.getElementById('product_id');
+  const supplierMain = document.getElementById('supplier_main');
+  const supplierSecond = document.getElementById('supplier_second');
+  const supplierDistinto = document.getElementById('supplier_distinto');
+  const supplierSecondWrap = document.getElementById('supplier_second_wrap');
 
-  // Mapa: produto -> [{supplier_id, supplier_name, max_price}]
-  function suppliersForProduct(productId) {
-    return combos.filter(x => String(x.product_id) === String(productId))
-                 .map(x => ({ supplier_id: x.supplier_id, supplier_name: x.supplier_name, max_price: Number(x.max_price) }));
+  const tipoSel = document.getElementById('tipo');
+  const pairSel = document.getElementById('pair_option');
+  const diopLente = document.getElementById('diop_lente');
+  const diopLente2 = document.getElementById('diop_lente_item2');
+  const diopBloco = document.getElementById('diop_bloco');
+  const diopBloco2 = document.getElementById('diop_bloco_item2');
+
+  function setAction(act){
+    document.getElementById('action').value = act;
   }
 
-  const tipoEl = document.getElementById('tipo');
-  const productEl = document.getElementById('product_id');
-  const supplierMainEl = document.getElementById('supplier_main');
-  const supplierSecondEl = document.getElementById('supplier_second');
-  const priceMainEl = document.getElementById('price_main');
-  const priceSecondEl = document.getElementById('price_second');
-  const mainPriceHint = document.getElementById('main_price_hint');
-  const secondPriceHint = document.getElementById('second_price_hint');
-
-  const pairRadios = document.querySelectorAll('input[name="pair_option"]');
-  const parBox = document.getElementById('par_box');
-  const supplierDistintoEl = document.getElementById('supplier_distinto');
-
-  const d1Lente = document.getElementById('d1_lente');
-  const d1Bloco = document.getElementById('d1_bloco');
-  const d2Lente = document.getElementById('d2_lente');
-  const d2Bloco = document.getElementById('d2_bloco');
-
-  function showDioptriaBlocks() {
-    const tipo = tipoEl.value;
-    const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
-
-    d1Lente.classList.add('hidden');
-    d1Bloco.classList.add('hidden');
-    d2Lente.classList.add('hidden');
-    d2Bloco.classList.add('hidden');
-
-    if (tipo === 'lente') {
-      d1Lente.classList.remove('hidden');
-      if (isPar) d2Lente.classList.remove('hidden');
-    } else if (tipo === 'bloco') {
-      d1Bloco.classList.remove('hidden');
-      if (isPar) d2Bloco.classList.remove('hidden');
-    }
+  function fillSuppliersFor(productId){
+    const options = combos.filter(c => c.product_id == productId);
+    const makeOptions = (sel) => {
+      sel.innerHTML = '<option value="">— selecione —</option>';
+      options.forEach(o => {
+        const op = document.createElement('option');
+        op.value = o.supplier_id;
+        op.textContent = `${o.supplier_name} (máx R$ ${Number(o.max_price).toFixed(2)})`;
+        sel.appendChild(op);
+      });
+    };
+    makeOptions(supplierMain);
+    makeOptions(supplierSecond);
   }
 
-  function toggleParBox() {
-    const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
-    parBox.classList.toggle('hidden', !isPar);
-  }
-
-  function populateSuppliers(targetSelect, productId) {
-    targetSelect.innerHTML = '';
-    const opts = suppliersForProduct(productId);
-    if (opts.length === 0) {
-      const op = document.createElement('option');
-      op.value = ''; op.textContent = 'Nenhum fornecedor disponível para este produto';
-      targetSelect.appendChild(op);
-      return;
-    }
-    const def = document.createElement('option');
-    def.value = ''; def.textContent = 'Selecione...';
-    targetSelect.appendChild(def);
-
-    opts.forEach(o => {
-      const op = document.createElement('option');
-      op.value = o.supplier_id;
-      op.textContent = o.supplier_name;
-      op.dataset.maxPrice = o.max_price.toFixed(2);
-      targetSelect.appendChild(op);
-    });
-  }
-
-  function updatePriceHint(selectEl, hintEl, priceInputEl) {
-    const sel = selectEl.options[selectEl.selectedIndex];
-    const max = sel && sel.dataset && sel.dataset.maxPrice ? Number(sel.dataset.maxPrice) : null;
-    hintEl.textContent = 'Preço máximo: ' + (max ? ('R$ ' + max.toFixed(2)) : '—');
-    if (max && priceInputEl) priceInputEl.max = String(max);
-  }
-
-  // Eventos
-  tipoEl.addEventListener('change', () => {
-    const tipoSel = tipoEl.value;
-    // filtra produtos do mesmo tipo
-    Array.from(productEl.options).forEach(opt => {
-      if (!opt.value) return;
-      opt.hidden = (opt.dataset.kind !== tipoSel);
-    });
-    productEl.value = '';
-    supplierMainEl.innerHTML = '<option value="">Selecione um produto acima</option>';
-    supplierSecondEl.innerHTML = '<option value="">(Mesmo do item 1)</option>';
-    supplierSecondEl.disabled = true;
-    priceSecondEl.value = '';
-    priceSecondEl.disabled = true;
-    supplierDistintoEl.checked = false;
-    mainPriceHint.textContent = 'Preço máximo: —';
-    secondPriceHint.textContent = 'Preço máximo: —';
-    showDioptriaBlocks();
-  });
-
-  productEl.addEventListener('change', () => {
-    const pid = productEl.value;
-    if (pid) {
-      populateSuppliers(supplierMainEl, pid);
-      populateSuppliers(supplierSecondEl, pid);
-      supplierSecondEl.disabled = !supplierDistintoEl.checked;
-      if (!supplierDistintoEl.checked) {
-        supplierSecondEl.value = '';
-      }
-    } else {
-      supplierMainEl.innerHTML = '<option value="">Selecione um produto acima</option>';
-      supplierSecondEl.innerHTML = '<option value="">(Mesmo do item 1)</option>';
-    }
-    mainPriceHint.textContent = 'Preço máximo: —';
-    secondPriceHint.textContent = 'Preço máximo: —';
-  });
-
-  supplierMainEl.addEventListener('change', () => updatePriceHint(supplierMainEl, mainPriceHint, priceMainEl));
-  supplierSecondEl.addEventListener('change', () => updatePriceHint(supplierSecondEl, secondPriceHint, priceSecondEl));
-
-  pairRadios.forEach(r => r.addEventListener('change', () => {
-    toggleParBox();
-    showDioptriaBlocks();
-  }));
-
-  supplierDistintoEl.addEventListener('change', () => {
-    const checked = supplierDistintoEl.checked;
-    supplierSecondEl.disabled = !checked;
-    priceSecondEl.disabled = !checked;
-    if (!checked) {
-      supplierSecondEl.value = '';
-      priceSecondEl.value = '';
-      secondPriceHint.textContent = 'Preço máximo: —';
-    } else {
-      // quando marcar, atualiza dica baseado no fornecedor selecionado (se houver)
-      updatePriceHint(supplierSecondEl, secondPriceHint, priceSecondEl);
+  productSelect.addEventListener('change', (e)=>{
+    const pid = e.target.value;
+    if(pid){
+      fillSuppliersFor(pid);
+    }else{
+      supplierMain.innerHTML = '<option value="">— selecione —</option>';
+      supplierSecond.innerHTML = '<option value="">— selecione —</option>';
     }
   });
 
-  // Inicialização de interface
-  toggleParBox();
-  showDioptriaBlocks();
+  supplierDistinto.addEventListener('change', ()=>{
+    supplierSecondWrap.style.display = supplierDistinto.checked ? 'grid' : 'none';
+  });
+
+  function updateDioptriaArea(){
+    const tipo = tipoSel.value;
+    const pair = pairSel.value;
+
+    diopLente.style.display = (tipo === 'lente') ? 'block' : 'none';
+    diopBloco.style.display = (tipo === 'bloco') ? 'block' : 'none';
+
+    const showSecond = (pair === 'par');
+    diopLente2.style.display = showSecond ? 'block' : 'none';
+    diopBloco2.style.display = showSecond ? 'block' : 'none';
+  }
+
+  tipoSel.addEventListener('change', updateDioptriaArea);
+  pairSel.addEventListener('change', updateDioptriaArea);
+  document.addEventListener('DOMContentLoaded', updateDioptriaArea);
 </script>
 {% endblock %}
