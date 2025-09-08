@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Admin → Regras (Produto×Fornecedor×Preço Máximo)</h2>
+
 <form method="post" action="{{ url_for('admin_rules_create') }}" class="grid" style="margin-bottom:16px;">
   <div>
     <label>Produto</label>
@@ -26,6 +27,7 @@
     <button class="btn primary">Criar Regra</button>
   </div>
 </form>
+
 <table>
   <tr><th>ID</th><th>Produto</th><th>Fornecedor</th><th>Preço Máx</th><th>Status</th><th>Ações</th></tr>
   {% for r in rules %}
@@ -35,9 +37,12 @@
     <td>{{ r.supplier_name }}</td>
     <td>R$ {{ '%.2f'|format(r.max_price) }}</td>
     <td>{{ 'Ativa' if r.active else 'Inativa' }}</td>
-    <td>
-      <form method="post" action="{{ url_for('admin_rules_toggle', rid=r.id) }}" class="inline">
-        <button class="btn warn small">{{ 'Desativar' if r.active else 'Ativar' }}</button>
+    <td style="white-space:nowrap;">
+      <form method="post" action="{{ url_for('admin_rules_toggle', rid=r.id) }}" class="inline" style="display:inline;">
+        <button class="btn small">{{ 'Desativar' if r.active else 'Ativar' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_rules_delete', rid=r.id) }}" class="inline" style="display:inline;" onsubmit="return confirm('Excluir definitivamente esta regra?');">
+        <button class="btn danger small">Excluir</button>
       </form>
     </td>
   </tr>
