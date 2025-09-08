@@ -2,12 +2,27 @@
 {% block content %}
 <h2>Comprador → Meus Pedidos</h2>
 <table>
-  <tr><th>ID</th><th>Fornecedor</th><th>Status</th><th>Total (R$)</th><th>Criado</th><th></th><th></th></tr>
+  <tr>
+    <th>ID</th>
+    <th>Fornecedor</th>
+    <th>Status</th>
+    <th>Total (R$)</th>
+    <th>Criado</th>
+    <th></th>
+    <th></th>
+  </tr>
   {% for o in orders %}
+  {% set status_txt = o.status_exibido if o.get('status_exibido') is not none else o.status %}
   <tr>
     <td>#{{ o.id }}</td>
     <td>{{ o.supplier_name }}</td>
-    <td>{{ o.status }}</td>
+    <td>
+      {% if status_txt == 'FATURADO' %}
+        <span style="background:#fff4d6;border:1px solid #e6c200;color:#7a5a00;padding:2px 6px;border-radius:6px;">FATURADO</span>
+      {% else %}
+        {{ status_txt }}
+      {% endif %}
+    </td>
     <td>{{ '%.2f'|format(o.total) }}</td>
     <td class="muted">{{ o.created_at }}</td>
     <td><a class="btn small" href="{{ url_for('compras_detalhe', oid=o.id) }}">Ver detalhes</a></td>
