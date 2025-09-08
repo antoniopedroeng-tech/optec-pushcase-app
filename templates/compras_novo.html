@@ -23,7 +23,14 @@
     </div>
   </div>
 
+  <!-- ORDEM AJUSTADA: Código vem ANTES de Produto -->
   <div style="display:flex;gap:12px;flex-wrap:wrap;">
+    <div>
+      <label><strong>Código do produto (opcional)</strong></label><br>
+      <input type="text" name="product_code" id="product_code" placeholder="Ex.: LA167" autocomplete="off" style="width:180px">
+      <div style="font-size:12px;color:#777">Ao digitar, seleciono o produto automaticamente.</div>
+    </div>
+
     <div style="min-width:280px;">
       <label><strong>Produto</strong></label><br>
       <select name="product_id" id="product_id" required>
@@ -32,11 +39,7 @@
           <option value="{{ p.id }}">{{ p.name }} {% if p.code %} ({{ p.code }}){% endif %} — {{ p.kind }}</option>
         {% endfor %}
       </select>
-      <div style="font-size:12px;color:#777">Opcional: informar código se preferir</div>
-    </div>
-    <div>
-      <label><strong>Código (opcional)</strong></label><br>
-      <input type="text" name="product_code" placeholder="Ex.: LA167">
+      <div style="font-size:12px;color:#777">Se não tiver código, escolha na lista.</div>
     </div>
   </div>
 
@@ -134,6 +137,7 @@
   const elTipoLente = () => document.querySelector('input[name="tipo"][value="lente"]').checked;
   const elPairPar = () => document.querySelector('input[name="pair_option"][value="par"]').checked;
 
+  const productCodeInput = document.getElementById('product_code');
   const productSel = document.getElementById('product_id');
   const supplierMainSel = document.getElementById('supplier_main');
   const supplierSecondSel = document.getElementById('supplier_second');
@@ -194,12 +198,65 @@
     }
   }
 
+  function syncTipoWithProduct(){
+    const pid = Number(productSel.value);
+    const prod = PRODUCTS.find(p => p.id === pid);
+    if (!prod) return;
+    const tipoRadio = document.querySelector(`input[name="tipo"][value="${prod.kind}"]`);
+    if (tipoRadio) {
+      tipoRadio.checked = true;
+      toggleTipo();
+    }
+  }
+
+  function setSelectToProduct(prod){
+    if (!prod) return;
+    // Seleciona no dropdown
+    if (String(productSel.value) !== String(prod.id)) {
+      productSel.value = prod.id;
+      // reflete o código no input se vier da lista
+      if (productCodeInput && (!productCodeInput.value || productCodeInput.value.trim() === '')) {
+        if (prod.code) productCodeInput.value = prod.code;
+      }
+      // após escolher produto, atualiza fornecedores e tipo
+      fillSuppliers();
+      syncTipoWithProduct();
+    }
+  }
+
+  function findProductByCode(code){
+    const q = (code || '').trim().toUpperCase();
+    if (!q) return null;
+    let exact = PRODUCTS.find(p => (p.code || '').toUpperCase() === q);
+    if (exact) return exact;
+    const cands = PRODUCTS.filter(p => (p.code || '').toUpperCase().startsWith(q));
+    return (cands.length === 1) ? cands[0] : null;
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     fillSuppliers();
     toggleTipo();
     toggleSupplierSecond();
 
-    productSel.addEventListener('change', () => { fillSuppliers(); });
+    // Mudanças no produto: alinhar tipo e (opcional) refletir código
+    productSel.addEventListener('change', () => {
+      const pid = Number(productSel.value);
+      const prod = PRODUCTS.find(p => p.id === pid);
+      if (prod && prod.code) productCodeInput.value = prod.code;
+      fillSuppliers();
+      syncTipoWithProduct();
+      // limpam avisos de preço
+      max1.textContent = '';
+      max2.textContent = '';
+    });
+
+    // Digitou código → escolhe produto automaticamente (exato ou prefixo único)
+    productCodeInput.addEventListener('input', () => {
+      const prod = findProductByCode(productCodeInput.value);
+      if (prod) {
+        setSelectToProduct(prod);
+      }
+    });
 
     document.querySelectorAll('input[name="tipo"]').forEach(r => r.addEventListener('change', toggleTipo));
     document.querySelectorAll('input[name="pair_option"]').forEach(r => r.addEventListener('change', toggleSupplierSecond));
