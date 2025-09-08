@@ -28,12 +28,10 @@ app.secret_key = SECRET_KEY
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    # deixa passar redirects e 404/403 etc. "normais"
     if isinstance(e, HTTPException):
         return e
     tb = traceback.format_exc()
     print(f"[ERROR] Rota: {request.path}\n{tb}", flush=True)
-    # Página simples 500 para não ficar “crua”
     html = """
     {% extends "base.html" %}
     {% block title %}Erro Interno (500){% endblock %}
@@ -47,7 +45,6 @@ def handle_exception(e):
       </details>
     {% endblock %}
     """
-    # Evita quebrar caso base.html não exista:
     try:
         return render_template_string(html, path=request.path, tb=tb), 500
     except Exception:
@@ -56,7 +53,6 @@ def handle_exception(e):
 
 @app.route("/_diag")
 def diag():
-    """Diagnóstico rápido de ambiente/banco/deps."""
     info = {
         "app_name": APP_NAME,
         "now_utc": datetime.utcnow().isoformat(sep=" ", timespec="seconds"),
@@ -67,7 +63,6 @@ def diag():
         "tables": [],
         "users_count": None,
     }
-    # openpyxl?
     try:
         import openpyxl  # noqa
         info["openpyxl"] = "instalado"
@@ -77,17 +72,14 @@ def diag():
     if engine:
         try:
             with engine.connect() as conn:
-                # teste ping
                 conn.execute(text("SELECT 1"))
                 info["db_ok"] = True
-                # listar tabelas
                 rs = conn.execute(text("""
                     SELECT tablename FROM pg_tables
                     WHERE schemaname NOT IN ('pg_catalog','information_schema')
                     ORDER BY tablename
                 """))
                 info["tables"] = [r[0] for r in rs.fetchall()]
-                # contagem de usuários (se existir)
                 try:
                     cnt = conn.execute(text("SELECT COUNT(*) FROM users")).scalar_one()
                     info["users_count"] = int(cnt)
@@ -131,7 +123,6 @@ def diag():
 
 def init_db():
     if not engine:
-        # sem engine não dá para criar tabelas; apenas loga
         print("[BOOT] init_db(): pulado porque engine não foi criado (DATABASE_URL ausente).", flush=True)
         return
 
@@ -222,7 +213,6 @@ def init_db():
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
-        # colunas de compatibilidade
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
@@ -232,7 +222,6 @@ def init_db():
         except Exception:
             pass
 
-        # admin padrão
         exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
         if exists == 0:
             from werkzeug.security import generate_password_hash
@@ -433,7 +422,6 @@ def login():
             flash(f"Bem-vindo, {u['username']}!", "success"); audit("login", f"user={u['username']}")
             return redirect(url_for("index"))
         flash("Credenciais inválidas", "error")
-    # se login.html não existir, mostra um inline mínimo
     try:
         return render_template("login.html")
     except Exception:
@@ -454,7 +442,6 @@ def logout():
 
 @app.route("/")
 def index():
-    # se index.html não existir, renderiza inline para não dar 500
     try:
         return render_template("index.html")
     except Exception:
@@ -931,7 +918,7 @@ def admin_import():
     """
     return render_template_string(html, report=report)
 
-# -------- Comprador: Novo Pedido --------
+# -------- Comprador: Novo Pedido (CORRIGIDO: divide por fornecedor e limpa o form ao adicionar) --------
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
@@ -953,6 +940,8 @@ def compras_novo():
     products = [dict(p) for p in products]
 
     if request.method == "POST":
+        action = (request.form.get("action") or "").strip().lower()
+
         os_number = (request.form.get("os_number") or "").strip()
         pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
         tipo = (request.form.get("tipo") or "").lower()  # 'lente' ou 'bloco'
@@ -1069,39 +1058,60 @@ def compras_novo():
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
 
-        total = sum([it["price"] for it in items_to_add])
+        # === CORREÇÃO: criar 1 pedido por fornecedor ===
+        from collections import defaultdict
+        by_supplier = defaultdict(list)
+        for it in items_to_add:
+            by_supplier[it["supplier_id"]].append(it)
 
-        supplier_header = db_one("SELECT * FROM suppliers WHERE id=:id", id=items_to_add[0]["supplier_id"])
-        faturado = (supplier_header and (supplier_header.get("billing") or 0) == 1)
-
+        created_orders = []
         with engine.begin() as conn:
-            status = 'PAGO' if faturado else 'PENDENTE_PAGAMENTO'
-            res = conn.execute(text("""
-                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-                VALUES (:b,:s,:st,:t,:n,:c,:u) RETURNING id
-            """), dict(b=session["user_id"], s=items_to_add[0]["supplier_id"], st=status, t=total,
-                       n=f"OS {os_number} ({pair_option})", c=datetime.utcnow(), u=datetime.utcnow()))
-            order_id = res.scalar_one()
-            for it in items_to_add:
-                conn.execute(text("""
-                    INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                    VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
-                """), dict(o=order_id, p=it["product_id"], pr=it["price"],
-                           sf=it["d"]["sphere"], cl=it["d"]["cylinder"], ba=it["d"]["base"],
-                           ad=it["d"]["addition"], os=os_number))
+            for sup_id, its in by_supplier.items():
+                supplier_row = conn.execute(text("SELECT * FROM suppliers WHERE id=:id"), dict(id=sup_id)).mappings().first()
+                faturado = (supplier_row and (supplier_row.get("billing") or 0) == 1)
 
-            if faturado:
-                conn.execute(text("""
-                    INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
-                    VALUES (:o,:p,:m,:r,:d,:a)
-                """), dict(o=order_id, p=session["user_id"], m="FATURADO", r=f"OS {os_number}",
-                           d=datetime.utcnow(), a=total))
+                total_group = sum(float(it["price"]) for it in its)
+                status = 'PAGO' if faturado else 'PENDENTE_PAGAMENTO'
 
-        audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)} faturado={int(faturado)}")
-        if faturado:
-            flash("Pedido criado como FATURADO e incluído diretamente no relatório.", "success")
+                res = conn.execute(text("""
+                    INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+                    VALUES (:b,:s,:st,:t,:n,:c,:u) RETURNING id
+                """), dict(b=session["user_id"], s=sup_id, st=status, t=total_group,
+                           n=f"OS {os_number} ({pair_option})", c=datetime.utcnow(), u=datetime.utcnow()))
+                order_id = res.scalar_one()
+
+                for it in its:
+                    conn.execute(text("""
+                        INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                        VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
+                    """), dict(o=order_id, p=it["product_id"], pr=it["price"],
+                               sf=it["d"]["sphere"], cl=it["d"]["cylinder"],
+                               ba=it["d"]["base"], ad=it["d"]["addition"], os=os_number))
+
+                if faturado:
+                    conn.execute(text("""
+                        INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
+                        VALUES (:o,:p,:m,:r,:d,:a)
+                    """), dict(o=order_id, p=session["user_id"], m="FATURADO",
+                               r=f"OS {os_number}", d=datetime.utcnow(), a=total_group))
+
+                created_orders.append((order_id, faturado))
+
+        for oid, fat in created_orders:
+            audit("order_create", f"id={oid} os={os_number} faturado={int(fat)}")
+
+        # Se o botão foi "Adicionar à lista", limpa via redirect (PRG)
+        if action in ("add","adicionar","add_to_list"):
+            flash("Item(ns) adicionados à lista.", "success")
+            return redirect(url_for("compras_novo"))
+
+        if any(fat for _, fat in created_orders) and any((not fat) for _, fat in created_orders):
+            flash("Pedidos criados: 1 FATURADO (lançado) e 1 PENDENTE (enviado ao pagador).", "success")
+        elif all(fat for _, fat in created_orders):
+            flash("Pedido(s) criado(s) como FATURADO(s) e incluído(s) diretamente no relatório.", "success")
         else:
-            flash("Pedido criado e enviado ao pagador.", "success")
+            flash("Pedido(s) criado(s) e enviado(s) ao pagador.", "success")
+
         return redirect(url_for("compras_lista"))
 
     return render_template("compras_novo.html", combos=combos, products=products)
