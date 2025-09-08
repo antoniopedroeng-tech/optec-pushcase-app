@@ -570,8 +570,6 @@ def admin_rules_toggle(rid):
 def admin_rules_delete(rid):
     ret = require_role("admin")
     if ret: return ret
-    # verificar uso
-    used = db_one("SELECT 1 FROM purchase_items i JOIN rules r ON r.product_id=i.product_id AND r.supplier_id=(SELECT supplier_id FROM purchase_orders o WHERE o.id=i.order_id LIMIT 1) WHERE r.id=:id LIMIT 1", id=rid)
     # Mesmo que haja registros históricos, a regra pode ser excluída (não quebra histórico)
     try:
         db_exec("DELETE FROM rules WHERE id=:id", id=rid)
@@ -1008,11 +1006,23 @@ def compras_novo():
 def compras_lista():
     ret = require_role("comprador","admin")
     if ret: return ret
+    # Traz pedidos do comprador + flag de FATURADO (se houver payment com method='FATURADO')
     orders = db_all("""
-        SELECT o.*, s.name as supplier_name
-        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.buyer_id=:b ORDER BY o.id DESC
+        SELECT
+            o.*,
+            s.name AS supplier_name,
+            EXISTS (SELECT 1 FROM payments pay WHERE pay.order_id = o.id AND pay.method = 'FATURADO') AS is_faturado
+        FROM purchase_orders o
+        JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.buyer_id=:b
+        ORDER BY o.id DESC
     """, b=session["user_id"])
+
+    # Ajusta status exibido: se PAGO + FATURADO -> mostrar 'FATURADO'
+    for o in orders:
+        if (o.get("status") == "PAGO") and (o.get("is_faturado") in (True, 1, "t")):
+            o["status"] = "FATURADO"
+
     return render_template("compras_lista.html", orders=orders)
 
 @app.route("/compras/<int:oid>")
