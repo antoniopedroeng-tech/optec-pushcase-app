@@ -1,6 +1,7 @@
 import os
 import io
 import csv
+import traceback
 from datetime import datetime, date, timedelta
 from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash, send_file
 from sqlalchemy import create_engine, text
@@ -111,16 +112,17 @@ def init_db():
     with engine.begin() as conn:
         conn.execute(text(ddl))
 
+        # garantir colunas para bases antigas
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
             pass
-
         try:
             conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS billing INTEGER NOT NULL DEFAULT 1"))
         except Exception:
             pass
 
+        # cria admin default se não existir
         exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
         if exists == 0:
             from werkzeug.security import generate_password_hash
@@ -129,7 +131,7 @@ def init_db():
                 dict(u="admin", p=generate_password_hash("admin123"), r="admin", c=datetime.utcnow())
             )
 
-# Helpers
+# Helpers comuns
 def db_all(sql, **params):
     with engine.connect() as conn:
         return conn.execute(text(sql), params).mappings().all()
@@ -166,7 +168,7 @@ def require_role(*roles):
 def inject_globals():
     return {"now": datetime.utcnow(), "role": session.get("role"), "user": current_user(), "app_name": APP_NAME}
 
-# ============================ RELATÓRIOS ============================
+# ============================ RELATÓRIOS (Excel in-memory) ============================
 
 def _excel_pack(rows, sheet_title="Relatório"):
     try:
@@ -174,6 +176,7 @@ def _excel_pack(rows, sheet_title="Relatório"):
         from openpyxl.utils import get_column_letter
         from openpyxl.styles import Font
     except ImportError as e:
+        # Sem openpyxl, a rota chamadora decide fallback
         raise RuntimeError("openpyxl não está instalado") from e
 
     wb = Workbook()
@@ -185,8 +188,10 @@ def _excel_pack(rows, sheet_title="Relatório"):
     if rows:
         for c in ws[1]:
             c.font = Font(bold=True)
-    for i in range(1, (len(rows[0]) if rows else 6) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 20
+    # largura simples
+    if rows:
+        for i in range(1, len(rows[0]) + 1):
+            ws.column_dimensions[get_column_letter(i)].width = 20
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -318,13 +323,15 @@ def index():
 
 @app.route("/admin/users")
 def admin_users():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     users = db_all("SELECT id, username, role, created_at FROM users ORDER BY id")
     return render_template("admin_users.html", users=users)
 
 @app.route("/admin/users/create", methods=["POST"])
 def admin_users_create():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
     role = request.form.get("role") or "comprador"
@@ -341,13 +348,15 @@ def admin_users_create():
 
 @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
 def admin_users_delete(uid):
-    if require_role("admin"):
-        return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
 
+    # não permitir excluir a si mesmo
     if uid == session.get("user_id"):
         flash("Não é possível excluir o próprio usuário logado.", "error")
         return redirect(url_for("admin_users"))
 
+    # checar referências (pedidos, pagamentos, auditoria)
     refs = {
         "pedidos": db_one("SELECT 1 FROM purchase_orders WHERE buyer_id=:id LIMIT 1", id=uid),
         "pagamentos": db_one("SELECT 1 FROM payments WHERE payer_id=:id LIMIT 1", id=uid),
@@ -365,6 +374,7 @@ def admin_users_delete(uid):
         )
         return redirect(url_for("admin_users"))
 
+    # sem vínculos: pode excluir
     try:
         db_exec("DELETE FROM users WHERE id=:id", id=uid)
         audit("user_delete", f"id={uid}")
@@ -377,16 +387,18 @@ def admin_users_delete(uid):
 
 @app.route("/admin/suppliers")
 def admin_suppliers():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     suppliers = db_all("SELECT * FROM suppliers ORDER BY name")
     return render_template("admin_suppliers.html", suppliers=suppliers)
 
 @app.route("/admin/suppliers/create", methods=["POST"])
 def admin_suppliers_create():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     name = (request.form.get("name") or "").strip()
     billing = 1 if (request.form.get("billing") in ("on","1","true","True","checked")) else 1
-    if not name: 
+    if not name:
         flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
     try:
         db_exec("INSERT INTO suppliers (name, active, billing) VALUES (:n,1,:b)", n=name, b=billing)
@@ -397,7 +409,8 @@ def admin_suppliers_create():
 
 @app.route("/admin/suppliers/<int:sid>/toggle", methods=["POST"])
 def admin_suppliers_toggle(sid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     s = db_one("SELECT * FROM suppliers WHERE id=:id", id=sid)
     if not s: flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
     new_active = 0 if s["active"] else 1
@@ -407,7 +420,8 @@ def admin_suppliers_toggle(sid):
 
 @app.route("/admin/suppliers/<int:sid>/toggle-billing", methods=["POST"])
 def admin_suppliers_toggle_billing(sid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     s = db_one("SELECT * FROM suppliers WHERE id=:id", id=sid)
     if not s: flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
     new_billing = 0 if s["billing"] else 1
@@ -418,7 +432,8 @@ def admin_suppliers_toggle_billing(sid):
 
 @app.route("/admin/suppliers/<int:sid>/delete", methods=["POST"])
 def admin_suppliers_delete(sid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     used_rule = db_one("SELECT 1 FROM rules WHERE supplier_id=:id LIMIT 1", id=sid)
     used_order = db_one("SELECT 1 FROM purchase_orders WHERE supplier_id=:id LIMIT 1", id=sid)
     if used_rule or used_order:
@@ -433,13 +448,15 @@ def admin_suppliers_delete(sid):
 
 @app.route("/admin/products")
 def admin_products():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     products = db_all("SELECT * FROM products ORDER BY kind, name")
     return render_template("admin_products.html", products=products)
 
 @app.route("/admin/products/create", methods=["POST"])
 def admin_products_create():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     name = (request.form.get("name") or "").strip()
     code = (request.form.get("code") or "").strip()
     kind = (request.form.get("kind") or "lente").lower()
@@ -459,7 +476,8 @@ def admin_products_create():
 
 @app.route("/admin/products/<int:pid>/toggle", methods=["POST"])
 def admin_products_toggle(pid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     p = db_one("SELECT * FROM products WHERE id=:id", id=pid)
     if not p: flash("Produto não encontrado.", "error"); return redirect(url_for("admin_products"))
     new_active = 0 if p["active"] else 1
@@ -469,7 +487,8 @@ def admin_products_toggle(pid):
 
 @app.route("/admin/products/<int:pid>/delete", methods=["POST"])
 def admin_products_delete(pid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     used_rule = db_one("SELECT 1 FROM rules WHERE product_id=:id LIMIT 1", id=pid)
     used_item = db_one("SELECT 1 FROM purchase_items WHERE product_id=:id LIMIT 1", id=pid)
     if used_rule or used_item:
@@ -484,7 +503,8 @@ def admin_products_delete(pid):
 
 @app.route("/admin/rules")
 def admin_rules():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     rules = db_all("""
         SELECT r.id, r.max_price, r.active,
                p.name as product_name, p.kind as product_kind, p.id as product_id,
@@ -500,7 +520,8 @@ def admin_rules():
 
 @app.route("/admin/rules/create", methods=["POST"])
 def admin_rules_create():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     product_id = request.form.get("product_id", type=int)
     supplier_id = request.form.get("supplier_id", type=int)
     max_price = request.form.get("max_price", type=float)
@@ -516,7 +537,8 @@ def admin_rules_create():
 
 @app.route("/admin/rules/<int:rid>/toggle", methods=["POST"])
 def admin_rules_toggle(rid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     r = db_one("SELECT * FROM rules WHERE id=:id", id=rid)
     if not r: flash("Regra não encontrada.", "error"); return redirect(url_for("admin_rules"))
     new_active = 0 if r["active"] else 1
@@ -524,10 +546,10 @@ def admin_rules_toggle(rid):
     audit("rule_toggle", f"id={rid} active={new_active}")
     return redirect(url_for("admin_rules"))
 
-# >>> NOVA ROTA: Excluir regra definitivamente
 @app.route("/admin/rules/<int:rid>/delete", methods=["POST"])
 def admin_rules_delete(rid):
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
     try:
         db_exec("DELETE FROM rules WHERE id=:id", id=rid)
         audit("rule_delete", f"id={rid}")
@@ -542,7 +564,7 @@ def admin_rules_delete(rid):
 def admin_import_template():
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
+        from openpyxl.styles import Font
     except ImportError:
         html = """
         {% extends "base.html" %}
@@ -589,7 +611,8 @@ def admin_import_template():
 
 @app.route("/admin/import", methods=["GET", "POST"])
 def admin_import():
-    if require_role("admin"): return require_role("admin")
+    ret = require_role("admin")
+    if ret: return ret
 
     report = {"suppliers": {"inserted":0, "updated":0},
               "products": {"inserted":0, "updated":0},
@@ -729,6 +752,7 @@ def admin_import():
                     report["errors"].append(str(e))
                     flash("Falha na importação. Veja os erros.", "error")
 
+    # Página simples inline
     html = """
     {% extends "base.html" %}
     {% block title %}Importação em Massa{% endblock %}
@@ -765,15 +789,368 @@ def admin_import():
     """
     return render_template_string(html, report=report)
 
-# -------- Compras / Pagamentos / Relatórios (demais rotas já enviadas) --------
-# (mantidos exatamente como na sua versão anterior — não repeti aqui por brevidade)
+# -------- Comprador: Novo Pedido --------
+
+@app.route("/compras/novo", methods=["GET","POST"])
+def compras_novo():
+    ret = require_role("comprador","admin")
+    if ret: return ret
+
+    combos = db_all("""
+        SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.code as product_code, p.kind,
+               s.id as supplier_id, s.name as supplier_name, r.max_price
+        FROM rules r
+        JOIN products p ON p.id = r.product_id
+        JOIN suppliers s ON s.id = r.supplier_id
+        WHERE r.active=1 AND p.active=1 AND s.active=1
+        ORDER BY s.name, p.kind, p.name
+    """)
+    products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
+
+    combos = [dict(r) for r in combos]
+    products = [dict(p) for p in products]
+
+    if request.method == "POST":
+        os_number = (request.form.get("os_number") or "").strip()
+        pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
+        tipo = (request.form.get("tipo") or "").lower()  # 'lente' ou 'bloco'
+        product_id = request.form.get("product_id", type=int)
+        product_code = (request.form.get("product_code") or "").strip()
+        supplier_main = request.form.get("supplier_main", type=int)
+        price_main = request.form.get("price_main", type=float)
+
+        supplier_distinto = request.form.get("supplier_distinto") == "on"
+        supplier_second = request.form.get("supplier_second", type=int) if supplier_distinto else None
+        price_second = request.form.get("price_second", type=float) if supplier_distinto else None
+
+        if not os_number:
+            flash("Informe o número da OS.", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
+        existing_n = int(existing["n"] if existing else 0)
+
+        if pair_option not in ("meio","par"):
+            flash("Selecione se é meio par ou um par.", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        if tipo not in ("lente","bloco"):
+            flash("Selecione o tipo (lente/bloco).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        # Se não veio product_id, tenta resolver por código e tipo
+        if not product_id and product_code:
+            p = db_one("SELECT id FROM products WHERE code=:c AND kind=:k AND active=1", c=product_code, k=tipo)
+            if p:
+                product_id = int(p["id"])
+
+        if not product_id:
+            flash("Selecione o produto (ou informe um código válido).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        # Validação de fornecedor/regra D1
+        rule_main = db_one("""
+            SELECT r.*, p.kind as product_kind
+            FROM rules r JOIN products p ON p.id = r.product_id
+            WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
+        """, pid=product_id, sid=supplier_main)
+        if not rule_main:
+            flash("Fornecedor principal indisponível para este produto.", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+        if price_main is None or price_main <= 0 or price_main > float(rule_main["max_price"]) + 1e-6:
+            flash(f"Preço do item principal inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        # Utilitários de validação
+        def _step_ok(x: float) -> bool:
+            return (abs(x * 100) % 25) == 0  # múltiplos de 0,25
+
+        def validate_lente(prefix):
+            sphere = request.form.get(f"{prefix}_sphere", type=float)
+            cylinder_raw = request.form.get(f"{prefix}_cylinder", type=float)
+            # normaliza para negativo
+            cylinder = None
+            if cylinder_raw is not None:
+                cylinder = -abs(cylinder_raw)
+            if sphere is None or sphere < -20 or sphere > 20 or not _step_ok(sphere):
+                return None, "Esférico inválido (−20 a +20 em passos de 0,25)."
+            if cylinder is None or cylinder > 0 or cylinder < -15 or not _step_ok(cylinder):
+                return None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
+            return {"sphere": sphere, "cylinder": cylinder, "base": None, "addition": None}, None
+
+        def validate_bloco(prefix):
+            base = request.form.get(f"{prefix}_base", type=float)
+            addition = request.form.get(f"{prefix}_addition", type=float)
+            allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
+            if base is None or base not in allowed_bases:
+                return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
+            if addition is None or addition < 1.0 or addition > 4.0 or not _step_ok(addition):
+                return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
+            return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
+
+        items_to_add = []
+
+        # Item D1 (A)
+        if tipo == "lente":
+            d1, err = validate_lente("d1")
+            if err:
+                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+        else:
+            d1, err = validate_bloco("d1")
+            if err:
+                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+        items_to_add.append({"product_id": product_id, "supplier_id": supplier_main, "price": price_main, "d": d1})
+
+        # Item D2 (B) se “par”
+        if pair_option == "par":
+            if supplier_distinto:
+                if not supplier_second:
+                    flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                rule_second = db_one("""
+                    SELECT r.*, p.kind as product_kind
+                    FROM rules r JOIN products p ON p.id = r.product_id
+                    WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
+                """, pid=product_id, sid=supplier_second)
+                if not rule_second:
+                    flash("Fornecedor do segundo item indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                if price_second is None or price_second <= 0 or price_second > float(rule_second["max_price"]) + 1e-6:
+                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+            else:
+                supplier_second, price_second = supplier_main, price_main
+
+            if tipo == "lente":
+                d2, err = validate_lente("d2")
+                if err:
+                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+            else:
+                d2, err = validate_bloco("d2")
+                if err:
+                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+
+            items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": d2})
+
+        # Limite de 2 por OS
+        if existing_n + len(items_to_add) > 2:
+            flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
+        # Criação do pedido (cabeçalho usa fornecedor do 1º item)
+        total = sum([it["price"] for it in items_to_add])
+
+        # Verifica faturamento: se o fornecedor do cabeçalho tem billing=1, já sai como PAGO com método "FATURADO"
+        supplier_header = db_one("SELECT billing FROM suppliers WHERE id=:id", id=items_to_add[0]["supplier_id"])
+        faturado = bool(supplier_header and (supplier_header["billing"] == 1))
+
+        with engine.begin() as conn:
+            res = conn.execute(text("""
+                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+                VALUES (:b,:s,:st,:t,:n,:c,:u) RETURNING id
+            """), dict(b=session["user_id"], s=items_to_add[0]["supplier_id"],
+                       st=('PAGO' if faturado else 'PENDENTE_PAGAMENTO'),
+                       t=total, n=f"OS {os_number} ({pair_option})",
+                       c=datetime.utcnow(), u=datetime.utcnow()))
+            order_id = res.scalar_one()
+            for it in items_to_add:
+                conn.execute(text("""
+                    INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                    VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
+                """), dict(o=order_id, p=it["product_id"], pr=it["price"],
+                           sf=it["d"]["sphere"], cl=it["d"]["cylinder"], ba=it["d"]["base"],
+                           ad=it["d"]["addition"], os=os_number))
+
+            if faturado:
+                # gera um lançamento em payments para entrar no relatório
+                conn.execute(text("""
+                    INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
+                    VALUES (:o,:p,:m,:r,:d,:a)
+                """), dict(o=order_id, p=session["user_id"], m="FATURADO", r=f"OS {os_number}",
+                           d=datetime.utcnow(), a=total))
+
+        audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)} faturado={int(faturado)}")
+        if faturado:
+            flash("Pedido criado como FATURADO e enviado diretamente ao relatório.", "success")
+        else:
+            flash("Pedido criado e enviado ao pagador.", "success")
+        return redirect(url_for("compras_lista"))
+
+    return render_template("compras_novo.html", combos=combos, products=products)
+
+# -------- Comprador: lista/detalhe --------
+
+@app.route("/compras")
+def compras_lista():
+    ret = require_role("comprador","admin")
+    if ret: return ret
+    orders = db_all("""
+        SELECT o.*, s.name as supplier_name
+        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.buyer_id=:b ORDER BY o.id DESC
+    """, b=session["user_id"])
+    return render_template("compras_lista.html", orders=orders)
+
+@app.route("/compras/<int:oid>")
+def compras_detalhe(oid):
+    ret = require_role("comprador","admin")
+    if ret: return ret
+    order = db_one("""
+        SELECT o.*, s.name as supplier_name
+        FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.id=:id
+    """, id=oid)
+    if not order:
+        flash("Pedido não encontrado.", "error"); return redirect(url_for("compras_lista"))
+    if session.get("role") != "admin" and order["buyer_id"] != session.get("user_id"):
+        flash("Acesso negado ao pedido.", "error"); return redirect(url_for("compras_lista"))
+    items = db_all("""
+        SELECT i.*, p.name as product_name, p.kind as product_kind
+        FROM purchase_items i JOIN products p ON p.id = i.product_id
+        WHERE i.order_id=:id ORDER BY i.id
+    """, id=oid)
+    return render_template("compras_detalhe.html", order=order, items=items)
+
+# -------- Pagador --------
+
+@app.route("/pagamentos")
+def pagamentos_lista():
+    ret = require_role("pagador","admin")
+    if ret: return ret
+    orders = db_all("""
+        SELECT o.*, u.username as buyer_name, s.name as supplier_name
+        FROM purchase_orders o
+        JOIN users u ON u.id = o.buyer_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.status='PENDENTE_PAGAMENTO'
+        ORDER BY o.created_at ASC
+    """)
+    return render_template("pagamentos_lista.html", orders=orders)
+
+@app.route("/pagamentos/<int:oid>", methods=["GET","POST"])
+def pagamentos_detalhe(oid):
+    ret = require_role("pagador","admin")
+    if ret: return ret
+    order = db_one("""
+        SELECT o.*, u.username as buyer_name, s.name as supplier_name
+        FROM purchase_orders o
+        JOIN users u ON u.id = o.buyer_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.id=:id
+    """, id=oid)
+    items = db_all("""
+        SELECT i.*, p.name as product_name, p.kind as product_kind
+        FROM purchase_items i JOIN products p ON p.id = i.product_id
+        WHERE i.order_id=:id
+    """, id=oid)
+    if not order:
+        flash("Pedido não encontrado.", "error"); return redirect(url_for("pagamentos_lista"))
+    if request.method == "POST":
+        method = (request.form.get("method") or "PIX").strip()
+        reference = (request.form.get("reference") or "").strip()
+        amount = request.form.get("amount", type=float)
+        if amount is None or amount <= 0:
+            flash("Valor inválido.", "error"); return render_template("pagamentos_detalhe.html", order=order, items=items)
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
+                VALUES (:o,:p,:m,:r,:d,:a)
+            """), dict(o=oid, p=session["user_id"], m=method, r=reference, d=datetime.utcnow(), a=amount))
+            conn.execute(text("UPDATE purchase_orders SET status='PAGO', updated_at=:u WHERE id=:id"),
+                         dict(u=datetime.utcnow(), id=oid))
+        audit("order_paid", f"id={oid} amount={amount}")
+        flash("Pagamento registrado e pedido baixado como PAGO.", "success"); return redirect(url_for("pagamentos_lista"))
+    return render_template("pagamentos_detalhe.html", order=order, items=items)
+
+# -------- Relatórios --------
+
+@app.route("/relatorios")
+def relatorios_index():
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    # Sugere HOJE
+    existing = []
+    default_day = date.today().isoformat()
+    return render_template("relatorios.html", existing=existing, default_day=default_day)
+
+@app.route("/relatorios/diario.xlsx")
+def relatorio_diario_xlsx():
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    day = request.args.get("date") or date.today().isoformat()
+    try:
+        xbytes = build_excel_bytes_for_day(day)
+        return send_file(io.BytesIO(xbytes),
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         as_attachment=True, download_name=f"pagamentos_{day}.xlsx")
+    except Exception as e:
+        print(f"[RELATORIO] Falha ao gerar XLSX: {e}", flush=True)
+        flash("Excel indisponível no momento. Baixando em CSV.", "warning")
+        return redirect(url_for("relatorio_diario_csv", date=day))
+
+@app.route("/relatorios/diario.csv")
+def relatorio_diario_csv():
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    day = request.args.get("date") or date.today().isoformat()
+    rows = db_all("""
+        SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
+               o.id as order_id, s.name as supplier_name, u.username as payer_name
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        JOIN users u ON u.id = pay.payer_id
+        WHERE DATE(pay.paid_at)=:day
+        ORDER BY pay.paid_at ASC
+    """, day=day)
+    output = io.StringIO(); writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["paid_at","amount","method","reference","order_id","supplier","payer"])
+    for r in rows:
+        paid_at = r["paid_at"].isoformat(sep=" ", timespec="seconds") if hasattr(r["paid_at"], "isoformat") else str(r["paid_at"])
+        writer.writerow([paid_at, f"{float(r['amount']):.2f}", r["method"], r["reference"], r["order_id"], r["supplier_name"], r["payer_name"]])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
+                     as_attachment=True, download_name=f"pagamentos_{day}.csv")
+
+# -------- Admin: excluir pedidos --------
+
+@app.route("/admin/orders/<int:oid>/delete", methods=["POST"])
+def admin_orders_delete(oid):
+    ret = require_role("admin")
+    if ret: return ret
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM payments WHERE order_id=:id"), dict(id=oid))
+        conn.execute(text("DELETE FROM purchase_items WHERE order_id=:id"), dict(id=oid))
+        conn.execute(text("DELETE FROM purchase_orders WHERE id=:id"), dict(id=oid))
+    audit("order_delete", f"id={oid}")
+    flash("Pedido excluído.", "success")
+    return redirect(url_for("compras_lista"))
+
+# ============================ ERROR HANDLERS ============================
+
+@app.errorhandler(500)
+def handle_500(e):
+    # imprime stack trace no log do Render/console
+    print("=== EXCEPTION (500) ===", flush=True)
+    print(traceback.format_exc(), flush=True)
+    print("=======================", flush=True)
+    # página simples para o usuário
+    html = """
+    {% extends "base.html" %}
+    {% block content %}
+    <h2>Erro Interno (500)</h2>
+    <p>Ocorreu um erro ao processar <code>{{ path }}</code>.</p>
+    <p>Tente novamente. O administrador pode verificar os logs do servidor para mais detalhes.</p>
+    {% endblock %}
+    """
+    return render_template_string(html, path=request.path), 500
 
 # ============================ BOOTSTRAP ============================
 
+# Inicializa o banco na importação do app (compatível com Flask 3 + Gunicorn)
 try:
     init_db()
 except Exception as e:
     print(f"[BOOT] init_db() falhou: {e}", flush=True)
 
+# Execução local (opcional)
 if __name__ == "__main__":
+    # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db) antes de executar
     app.run(host="0.0.0.0", port=5000, debug=True)
