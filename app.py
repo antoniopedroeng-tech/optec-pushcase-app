@@ -1,7 +1,6 @@
 import os
 import io
 import csv
-import traceback
 from datetime import datetime, date, timedelta
 from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash, send_file
 from sqlalchemy import create_engine, text
@@ -36,7 +35,7 @@ def init_db():
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
-      billing INTEGER NOT NULL DEFAULT 1  -- 1 = faturamento (sim), 0 = não
+      billing INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS products (
@@ -118,7 +117,7 @@ def init_db():
         except Exception:
             pass
         try:
-            conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS billing INTEGER NOT NULL DEFAULT 1"))
+            conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS billing INTEGER NOT NULL DEFAULT 0"))
         except Exception:
             pass
 
@@ -170,44 +169,20 @@ def inject_globals():
 
 # ============================ RELATÓRIOS (Excel in-memory) ============================
 
-def _excel_pack(rows, sheet_title="Relatório"):
-    try:
-        from openpyxl import Workbook
-        from openpyxl.utils import get_column_letter
-        from openpyxl.styles import Font
-    except ImportError as e:
-        # Sem openpyxl, a rota chamadora decide fallback
-        raise RuntimeError("openpyxl não está instalado") from e
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_title
-    for r in rows:
-        ws.append(r)
-
-    if rows:
-        for c in ws[1]:
-            c.font = Font(bold=True)
-    # largura simples
-    if rows:
-        for i in range(1, len(rows[0]) + 1):
-            ws.column_dimensions[get_column_letter(i)].width = 20
-
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return bio.getvalue()
-
 def build_excel_bytes_for_day(day_str: str) -> bytes:
-    rows_db = db_all("""
+    """
+    Gera o Excel em memória (sem salvar em disco) para o dia (YYYY-MM-DD).
+    Colunas: Fornecedor, Produto, Estoque, Dioptria, Data, Método, Valor; e linha TOTAL no final.
+    """
+    rows = db_all("""
         SELECT
             s.name  AS fornecedor,
             p.name  AS produto,
             p.in_stock AS in_stock,
             i.sphere, i.cylinder, i.base, i.addition,
             i.quantity, i.unit_price,
-            DATE(pay.paid_at) AS data,
-            pay.method AS metodo
+            pay.method AS metodo,
+            DATE(pay.paid_at) AS data
         FROM payments pay
         JOIN purchase_orders o ON o.id = pay.order_id
         JOIN suppliers s       ON s.id = o.supplier_id
@@ -217,6 +192,19 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
         ORDER BY s.name, p.name
     """, day=day_str)
 
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font
+    except ImportError as e:
+        # Sem openpyxl, a rota chamadora decide fallback para CSV
+        raise RuntimeError("openpyxl não está instalado") from e
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Pagamentos do Dia"
+    ws.append(["Fornecedor", "Produto", "Estoque", "Dioptria", "Data", "Método", "Valor"])
+
     def fmt_dioptria(r):
         if r["sphere"] is not None or r["cylinder"] is not None:
             esf = f"{r['sphere']:+.2f}" if r["sphere"] is not None else "-"
@@ -227,43 +215,68 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
             add = f"+{r['addition']:.2f}" if r["addition"] is not None else "-"
             return f"Base {b} / Adição {add}"
 
-    header = ["Fornecedor","Produto","Estoque","Dioptria","Data","Método","Valor"]
-    data_rows = [header]
     grand_total = 0.0
-    for r in rows_db:
+    for r in rows:
         subtotal = float(r["quantity"] or 0) * float(r["unit_price"] or 0.0)
         grand_total += subtotal
-        data_rows.append([
+        ws.append([
             r["fornecedor"],
             r["produto"],
             "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
             fmt_dioptria(r),
-            (r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"])),
+            r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"]),
             r["metodo"] or "",
             float(f"{subtotal:.2f}")
         ])
-    data_rows.append(["","","","","","", ""])
-    data_rows.append(["","","","","TOTAL","", float(f"{grand_total:.2f}")])
-    return _excel_pack(data_rows, sheet_title="Pagamentos do Dia")
+
+    # Linha de TOTAL
+    ws.append(["", "", "", "", "", "", ""])
+    ws.append(["", "", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
+    ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=7).font = Font(bold=True)
+
+    for i, w in enumerate([18, 28, 12, 26, 12, 14, 14], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
-    rows_db = db_all("""
+    """
+    Gera o Excel em memória para um período [start, end] (strings YYYY-MM-DD).
+    Inclui pagamentos normais e faturados (método FATURADO).
+    """
+    rows = db_all("""
         SELECT
             s.name  AS fornecedor,
             p.name  AS produto,
             p.in_stock AS in_stock,
             i.sphere, i.cylinder, i.base, i.addition,
             i.quantity, i.unit_price,
-            DATE(pay.paid_at) AS data,
-            pay.method AS metodo
+            pay.method AS metodo,
+            DATE(pay.paid_at) AS data
         FROM payments pay
         JOIN purchase_orders o ON o.id = pay.order_id
         JOIN suppliers s       ON s.id = o.supplier_id
         JOIN purchase_items i  ON i.order_id = o.id
         JOIN products p        ON p.id = i.product_id
-        WHERE DATE(pay.paid_at) BETWEEN :start AND :end
+        WHERE DATE(pay.paid_at) BETWEEN :d1 AND :d2
         ORDER BY DATE(pay.paid_at), s.name, p.name
-    """, start=start_str, end=end_str)
+    """, d1=start_str, d2=end_str)
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font
+    except ImportError as e:
+        raise RuntimeError("openpyxl não está instalado") from e
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Pagamentos por Período"
+    ws.append(["Fornecedor", "Produto", "Estoque", "Dioptria", "Data", "Método", "Valor"])
 
     def fmt_dioptria(r):
         if r["sphere"] is not None or r["cylinder"] is not None:
@@ -275,24 +288,32 @@ def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
             add = f"+{r['addition']:.2f}" if r["addition"] is not None else "-"
             return f"Base {b} / Adição {add}"
 
-    header = ["Fornecedor","Produto","Estoque","Dioptria","Data","Método","Valor"]
-    data_rows = [header]
     grand_total = 0.0
-    for r in rows_db:
+    for r in rows:
         subtotal = float(r["quantity"] or 0) * float(r["unit_price"] or 0.0)
         grand_total += subtotal
-        data_rows.append([
+        ws.append([
             r["fornecedor"],
             r["produto"],
             "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
             fmt_dioptria(r),
-            (r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"])),
+            r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"]),
             r["metodo"] or "",
             float(f"{subtotal:.2f}")
         ])
-    data_rows.append(["","","","","","", ""])
-    data_rows.append(["","","","","TOTAL","", float(f"{grand_total:.2f}")])
-    return _excel_pack(data_rows, sheet_title="Pagamentos (Período)")
+
+    ws.append(["", "", "", "", "", "", ""])
+    ws.append(["", "", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
+    ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=7).font = Font(bold=True)
+
+    for i, w in enumerate([18, 28, 12, 26, 12, 14, 14], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 # ============================ ROTAS ============================
 
@@ -374,7 +395,6 @@ def admin_users_delete(uid):
         )
         return redirect(url_for("admin_users"))
 
-    # sem vínculos: pode excluir
     try:
         db_exec("DELETE FROM users WHERE id=:id", id=uid)
         audit("user_delete", f"id={uid}")
@@ -397,7 +417,7 @@ def admin_suppliers_create():
     ret = require_role("admin")
     if ret: return ret
     name = (request.form.get("name") or "").strip()
-    billing = 1 if (request.form.get("billing") in ("on","1","true","True","checked")) else 1
+    billing = 1 if (request.form.get("billing") in ("on","1","true","True")) else 0
     if not name:
         flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
     try:
@@ -423,11 +443,11 @@ def admin_suppliers_toggle_billing(sid):
     ret = require_role("admin")
     if ret: return ret
     s = db_one("SELECT * FROM suppliers WHERE id=:id", id=sid)
-    if not s: flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
-    new_billing = 0 if s["billing"] else 1
+    if not s:
+        flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
+    new_billing = 0 if (s["billing"] or 0) == 1 else 1
     db_exec("UPDATE suppliers SET billing=:b WHERE id=:id", b=new_billing, id=sid)
     audit("supplier_toggle_billing", f"id={sid} billing={new_billing}")
-    flash("Faturamento atualizado.", "success")
     return redirect(url_for("admin_suppliers"))
 
 @app.route("/admin/suppliers/<int:sid>/delete", methods=["POST"])
@@ -550,6 +570,9 @@ def admin_rules_toggle(rid):
 def admin_rules_delete(rid):
     ret = require_role("admin")
     if ret: return ret
+    # verificar uso
+    used = db_one("SELECT 1 FROM purchase_items i JOIN rules r ON r.product_id=i.product_id AND r.supplier_id=(SELECT supplier_id FROM purchase_orders o WHERE o.id=i.order_id LIMIT 1) WHERE r.id=:id LIMIT 1", id=rid)
+    # Mesmo que haja registros históricos, a regra pode ser excluída (não quebra histórico)
     try:
         db_exec("DELETE FROM rules WHERE id=:id", id=rid)
         audit("rule_delete", f"id={rid}")
@@ -562,9 +585,11 @@ def admin_rules_delete(rid):
 
 @app.route("/admin/import/template.xlsx")
 def admin_import_template():
+    # Tenta gerar XLSX com openpyxl; se faltar, mostra instrução clara
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
     except ImportError:
         html = """
         {% extends "base.html" %}
@@ -572,8 +597,10 @@ def admin_import_template():
         {% block content %}
         <div class="container" style="max-width:800px;margin:0 auto">
           <h2>Template de Importação</h2>
-          <p style="color:#b00"><strong>Dependência ausente:</strong> o servidor não tem <code>openpyxl</code> instalado.</p>
-          <p>Adicione <code>openpyxl==3.1.5</code> ao <code>requirements.txt</code> e publique novamente.</p>
+          <p style="color:#b00"><strong>Dependência ausente:</strong> o servidor não tem <code>openpyxl</code> instalado, necessário para gerar o arquivo .xlsx.</p>
+          <p>Adicione <code>openpyxl</code> ao seu <code>requirements.txt</code> e faça o deploy novamente:</p>
+          <pre>openpyxl==3.1.5</pre>
+          <p>Depois disso, volte e clique em “Baixar Template”.</p>
         </div>
         {% endblock %}
         """
@@ -588,6 +615,7 @@ def admin_import_template():
     ws1.append(["Fornecedor Exemplo B", 1, 0])
     for cell in ws1[1]:
         cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
     ws2 = wb.create_sheet("Products")
     ws2.append(["name", "code", "kind", "active", "in_stock"])
@@ -595,6 +623,7 @@ def admin_import_template():
     ws2.append(["Bloco Base 4", "BB4", "bloco", 1, 1])
     for cell in ws2[1]:
         cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
     ws3 = wb.create_sheet("Rules")
     ws3.append(["product_name", "product_kind", "supplier_name", "max_price", "active"])
@@ -602,6 +631,7 @@ def admin_import_template():
     ws3.append(["Bloco Base 4", "bloco", "Fornecedor Exemplo B", 80.00, 1])
     for cell in ws3[1]:
         cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -620,139 +650,137 @@ def admin_import():
               "errors": []}
 
     if request.method == "POST":
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            report["errors"].append("Dependência ausente: instale 'openpyxl' no servidor.")
-            flash("Instale 'openpyxl' para importar planilhas .xlsx.", "error")
+        file = request.files.get("file")
+        if not file or file.filename == "":
+            flash("Envie um arquivo .xlsx", "error")
         else:
-            file = request.files.get("file")
-            if not file or file.filename == "":
-                flash("Envie um arquivo .xlsx", "error")
-            else:
-                try:
-                    wb = load_workbook(file, data_only=True)
-                    with engine.begin() as conn:
-                        # Suppliers
-                        if "Suppliers" in wb.sheetnames:
-                            ws = wb["Suppliers"]
-                            headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-                            def idx(col): return headers.index(col) if col in headers else -1
-                            i_name = idx("name"); i_active = idx("active"); i_billing = idx("billing")
-                            if i_name == -1:
-                                report["errors"].append("Suppliers: coluna obrigatória 'name' não encontrada.")
-                            else:
-                                for row in ws.iter_rows(min_row=2, values_only=True):
-                                    if row is None: continue
-                                    name = (row[i_name] or "").strip() if row[i_name] else ""
-                                    if not name: continue
-                                    active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
-                                    billing = int(row[i_billing]) if (i_billing != -1 and row[i_billing] is not None) else 1
-                                    res = conn.execute(text("""
-                                        INSERT INTO suppliers (name, active, billing)
-                                        VALUES (:n, :a, :b)
-                                        ON CONFLICT (name) DO UPDATE SET active=EXCLUDED.active, billing=EXCLUDED.billing
-                                        RETURNING (xmax = 0) AS inserted
-                                    """), dict(n=name, a=active, b=billing))
-                                    inserted = res.fetchone()[0]
-                                    if inserted: report["suppliers"]["inserted"] += 1
-                                    else: report["suppliers"]["updated"] += 1
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(file, data_only=True)
+                with engine.begin() as conn:
+                    # Suppliers
+                    if "Suppliers" in wb.sheetnames:
+                        ws = wb["Suppliers"]
+                        headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
+                        def idx(col): return headers.index(col) if col in headers else -1
+                        i_name = idx("name"); i_active = idx("active"); i_billing = idx("billing")
+                        if i_name == -1:
+                            report["errors"].append("Suppliers: coluna obrigatória 'name' não encontrada.")
+                        else:
+                            for row in ws.iter_rows(min_row=2, values_only=True):
+                                if row is None: continue
+                                name = (row[i_name] or "").strip() if row[i_name] else ""
+                                if not name: continue
+                                active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
+                                billing = int(row[i_billing]) if (i_billing != -1 and row[i_billing] is not None) else 0
+                                res = conn.execute(text("""
+                                    INSERT INTO suppliers (name, active, billing)
+                                    VALUES (:n, :a, :b)
+                                    ON CONFLICT (name) DO UPDATE SET active=EXCLUDED.active, billing=EXCLUDED.billing
+                                    RETURNING (xmax = 0) AS inserted
+                                """), dict(n=name, a=active, b=billing))
+                                inserted = res.fetchone()[0]
+                                if inserted: report["suppliers"]["inserted"] += 1
+                                else: report["suppliers"]["updated"] += 1
 
-                        # Products
-                        if "Products" in wb.sheetnames:
-                            ws = wb["Products"]
-                            headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-                            def idx(col): return headers.index(col) if col in headers else -1
-                            i_name = idx("name"); i_code = idx("code"); i_kind = idx("kind"); i_active = idx("active"); i_stock = idx("in_stock")
-                            if i_name == -1 or i_kind == -1:
-                                report["errors"].append("Products: colunas obrigatórias 'name' e 'kind' não encontradas.")
-                            else:
-                                for row in ws.iter_rows(min_row=2, values_only=True):
-                                    if row is None: continue
-                                    name = (row[i_name] or "").strip() if row[i_name] else ""
-                                    if not name: continue
-                                    code = (row[i_code] or "").strip() if (i_code != -1 and row[i_code]) else ""
-                                    kind = (row[i_kind] or "").strip().lower() if row[i_kind] else ""
-                                    if kind not in ("lente", "bloco"):
-                                        report["errors"].append(f"Products: kind inválido '{kind}' para '{name}'. Use 'lente' ou 'bloco'.")
-                                        continue
-                                    active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
-                                    in_stock = int(row[i_stock]) if (i_stock != -1 and row[i_stock] is not None) else 0
-                                    res = conn.execute(text("""
-                                        INSERT INTO products (name, code, kind, active, in_stock)
-                                        VALUES (:n, :c, :k, :a, :instock)
-                                        ON CONFLICT (name, kind) DO UPDATE SET code=EXCLUDED.code, active=EXCLUDED.active, in_stock=EXCLUDED.in_stock
-                                        RETURNING (xmax = 0) AS inserted
-                                    """), dict(n=name, c=code, k=kind, a=active, instock=in_stock))
-                                    inserted = res.fetchone()[0]
-                                    if inserted: report["products"]["inserted"] += 1
-                                    else: report["products"]["updated"] += 1
+                    # Products
+                    if "Products" in wb.sheetnames:
+                        ws = wb["Products"]
+                        headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
+                        def idx(col): return headers.index(col) if col in headers else -1
+                        i_name = idx("name"); i_code = idx("code"); i_kind = idx("kind"); i_active = idx("active"); i_stock = idx("in_stock")
+                        if i_name == -1 or i_kind == -1:
+                            report["errors"].append("Products: colunas obrigatórias 'name' e 'kind' não encontradas.")
+                        else:
+                            for row in ws.iter_rows(min_row=2, values_only=True):
+                                if row is None: continue
+                                name = (row[i_name] or "").strip() if row[i_name] else ""
+                                if not name: continue
+                                code = (row[i_code] or "").strip() if (i_code != -1 and row[i_code]) else ""
+                                kind = (row[i_kind] or "").strip().lower() if row[i_kind] else ""
+                                if kind not in ("lente", "bloco"):
+                                    report["errors"].append(f"Products: kind inválido '{kind}' para '{name}'. Use 'lente' ou 'bloco'.")
+                                    continue
+                                active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
+                                in_stock = int(row[i_stock]) if (i_stock != -1 and row[i_stock] is not None) else 0
+                                res = conn.execute(text("""
+                                    INSERT INTO products (name, code, kind, active, in_stock)
+                                    VALUES (:n, :c, :k, :a, :instock)
+                                    ON CONFLICT (name, kind) DO UPDATE SET code=EXCLUDED.code, active=EXCLUDED.active, in_stock=EXCLUDED.in_stock
+                                    RETURNING (xmax = 0) AS inserted
+                                """), dict(n=name, c=code, k=kind, a=active, instock=in_stock))
+                                inserted = res.fetchone()[0]
+                                if inserted: report["products"]["inserted"] += 1
+                                else: report["products"]["updated"] += 1
 
-                        # Rules
-                        if "Rules" in wb.sheetnames:
-                            ws = wb["Rules"]
-                            headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-                            def idx(col): return headers.index(col) if col in headers else -1
-                            i_pn = idx("product_name"); i_pk = idx("product_kind"); i_sn = idx("supplier_name"); i_mp = idx("max_price"); i_active = idx("active")
-                            if i_pn == -1 or i_pk == -1 or i_sn == -1 or i_mp == -1:
-                                report["errors"].append("Rules: colunas obrigatórias 'product_name', 'product_kind', 'supplier_name', 'max_price' não encontradas.")
-                            else:
-                                for row in ws.iter_rows(min_row=2, values_only=True):
-                                    if row is None: continue
-                                    pn = (row[i_pn] or "").strip() if row[i_pn] else ""
-                                    pk = (row[i_pk] or "").strip().lower() if row[i_pk] else ""
-                                    sn = (row[i_sn] or "").strip() if row[i_sn] else ""
-                                    try:
-                                        mp = float(row[i_mp]) if row[i_mp] is not None else None
-                                    except:
-                                        mp = None
-                                    if not pn or pk not in ("lente","bloco") or not sn or mp is None:
-                                        report["errors"].append(f"Rules: dados inválidos (produto='{pn}', kind='{pk}', fornecedor='{sn}', max_price='{row[i_mp]}').")
-                                        continue
-                                    active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
+                    # Rules
+                    if "Rules" in wb.sheetnames:
+                        ws = wb["Rules"]
+                        headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
+                        def idx(col): return headers.index(col) if col in headers else -1
+                        i_pn = idx("product_name"); i_pk = idx("product_kind"); i_sn = idx("supplier_name"); i_mp = idx("max_price"); i_active = idx("active")
+                        if i_pn == -1 or i_pk == -1 or i_sn == -1 or i_mp == -1:
+                            report["errors"].append("Rules: colunas obrigatórias 'product_name', 'product_kind', 'supplier_name', 'max_price' não encontradas.")
+                        else:
+                            for row in ws.iter_rows(min_row=2, values_only=True):
+                                if row is None: continue
+                                pn = (row[i_pn] or "").strip() if row[i_pn] else ""
+                                pk = (row[i_pk] or "").strip().lower() if row[i_pk] else ""
+                                sn = (row[i_sn] or "").strip() if row[i_sn] else ""
+                                try:
+                                    mp = float(row[i_mp]) if row[i_mp] is not None else None
+                                except:
+                                    mp = None
+                                if not pn or pk not in ("lente","bloco") or not sn or mp is None:
+                                    report["errors"].append(f"Rules: dados inválidos (produto='{pn}', kind='{pk}', fornecedor='{sn}', max_price='{row[i_mp]}').")
+                                    continue
+                                active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
 
-                                    # Garantir IDs
-                                    prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
+                                # Garantir IDs
+                                prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
+                                if not prod:
+                                    prod = conn.execute(text("""
+                                        INSERT INTO products (name, code, kind, active)
+                                        VALUES (:n, '', :k, 1)
+                                        ON CONFLICT (name, kind) DO NOTHING
+                                        RETURNING id
+                                    """), dict(n=pn, k=pk)).mappings().first()
                                     if not prod:
-                                        prod = conn.execute(text("""
-                                            INSERT INTO products (name, code, kind, active)
-                                            VALUES (:n, '', :k, 1)
-                                            ON CONFLICT (name, kind) DO NOTHING
-                                            RETURNING id
-                                        """), dict(n=pn, k=pk)).mappings().first()
-                                        if not prod:
-                                            prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
-                                    supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
+                                        prod = conn.execute(text("SELECT id FROM products WHERE name=:n AND kind=:k"), dict(n=pn, k=pk)).mappings().first()
+                                supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
+                                if not supp:
+                                    supp = conn.execute(text("""
+                                        INSERT INTO suppliers (name, active)
+                                        VALUES (:n, 1)
+                                        ON CONFLICT (name) DO NOTHING
+                                        RETURNING id
+                                    """), dict(n=sn)).mappings().first()
                                     if not supp:
-                                        supp = conn.execute(text("""
-                                            INSERT INTO suppliers (name, active, billing)
-                                            VALUES (:n, 1, 1)
-                                            ON CONFLICT (name) DO NOTHING
-                                            RETURNING id
-                                        """), dict(n=sn)).mappings().first()
-                                        if not supp:
-                                            supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
+                                        supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
 
-                                    if not prod or not supp:
-                                        report["errors"].append(f"Rules: não foi possível identificar produto/fornecedor ('{pn}'/'{pk}' | '{sn}').")
-                                        continue
+                                if not prod or not supp:
+                                    report["errors"].append(f"Rules: não foi possível identificar produto/fornecedor ('{pn}'/'{pk}' | '{sn}').")
+                                    continue
 
-                                    res = conn.execute(text("""
-                                        INSERT INTO rules (product_id, supplier_id, max_price, active)
-                                        VALUES (:p, :s, :m, :a)
-                                        ON CONFLICT (product_id, supplier_id) DO UPDATE SET max_price=EXCLUDED.max_price, active=EXCLUDED.active
-                                        RETURNING (xmax = 0) AS inserted
-                                    """), dict(p=prod["id"], s=supp["id"], m=mp, a=active))
-                                    inserted = res.fetchone()[0]
-                                    if inserted: report["rules"]["inserted"] += 1
-                                    else: report["rules"]["updated"] += 1
+                                res = conn.execute(text("""
+                                    INSERT INTO rules (product_id, supplier_id, max_price, active)
+                                    VALUES (:p, :s, :m, :a)
+                                    ON CONFLICT (product_id, supplier_id) DO UPDATE SET max_price=EXCLUDED.max_price, active=EXCLUDED.active
+                                    RETURNING (xmax = 0) AS inserted
+                                """), dict(p=prod["id"], s=supp["id"], m=mp, a=active))
+                                inserted = res.fetchone()[0]
+                                if inserted: report["rules"]["inserted"] += 1
+                                else: report["rules"]["updated"] += 1
 
-                    flash("Importação concluída.", "success")
-                except Exception as e:
-                    report["errors"].append(str(e))
-                    flash("Falha na importação. Veja os erros.", "error")
+                flash("Importação concluída.", "success")
+            except ImportError:
+                report["errors"].append("Dependência ausente: instale 'openpyxl' no servidor.")
+                flash("Instale 'openpyxl' para importar planilhas .xlsx.", "error")
+            except Exception as e:
+                report["errors"].append(str(e))
+                flash("Falha na importação. Veja os erros.", "error")
 
-    # Página simples inline
+    # Página simples inline (sem depender de arquivo .html)
     html = """
     {% extends "base.html" %}
     {% block title %}Importação em Massa{% endblock %}
@@ -760,9 +788,9 @@ def admin_import():
     <div class="container" style="max-width: 900px; margin: 0 auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;">
         <h2>Importar planilha (Excel .xlsx)</h2>
-        <a class="btn primary" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
+        <a class="btn btn-sm btn-primary" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
       </div>
-      <p>Use o modelo com abas <strong>Suppliers</strong>, <strong>Products</strong> e <strong>Rules</strong>.</p>
+      <p>Use o modelo com abas <strong>Suppliers</strong> (com <code>billing</code>), <strong>Products</strong> e <strong>Rules</strong>.</p>
       <form method="post" enctype="multipart/form-data" style="margin-top: 16px;">
         <input type="file" name="file" accept=".xlsx" required />
         <button type="submit">Importar</button>
@@ -890,7 +918,7 @@ def compras_novo():
 
         items_to_add = []
 
-        # Item D1 (A)
+        # Item D1
         if tipo == "lente":
             d1, err = validate_lente("d1")
             if err:
@@ -901,7 +929,7 @@ def compras_novo():
                 flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
         items_to_add.append({"product_id": product_id, "supplier_id": supplier_main, "price": price_main, "d": d1})
 
-        # Item D2 (B) se “par”
+        # Item D2 se “par”
         if pair_option == "par":
             if supplier_distinto:
                 if not supplier_second:
@@ -934,21 +962,20 @@ def compras_novo():
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
 
-        # Criação do pedido (cabeçalho usa fornecedor do 1º item)
         total = sum([it["price"] for it in items_to_add])
 
-        # Verifica faturamento: se o fornecedor do cabeçalho tem billing=1, já sai como PAGO com método "FATURADO"
-        supplier_header = db_one("SELECT billing FROM suppliers WHERE id=:id", id=items_to_add[0]["supplier_id"])
-        faturado = bool(supplier_header and (supplier_header["billing"] == 1))
+        # Verifica faturamento do fornecedor do cabeçalho (primeiro item)
+        supplier_header = db_one("SELECT * FROM suppliers WHERE id=:id", id=items_to_add[0]["supplier_id"])
+        faturado = (supplier_header and (supplier_header.get("billing") or 0) == 1)
 
         with engine.begin() as conn:
+            # status depende do faturamento
+            status = 'PAGO' if faturado else 'PENDENTE_PAGAMENTO'
             res = conn.execute(text("""
                 INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
                 VALUES (:b,:s,:st,:t,:n,:c,:u) RETURNING id
-            """), dict(b=session["user_id"], s=items_to_add[0]["supplier_id"],
-                       st=('PAGO' if faturado else 'PENDENTE_PAGAMENTO'),
-                       t=total, n=f"OS {os_number} ({pair_option})",
-                       c=datetime.utcnow(), u=datetime.utcnow()))
+            """), dict(b=session["user_id"], s=items_to_add[0]["supplier_id"], st=status, t=total,
+                       n=f"OS {os_number} ({pair_option})", c=datetime.utcnow(), u=datetime.utcnow()))
             order_id = res.scalar_one()
             for it in items_to_add:
                 conn.execute(text("""
@@ -958,8 +985,8 @@ def compras_novo():
                            sf=it["d"]["sphere"], cl=it["d"]["cylinder"], ba=it["d"]["base"],
                            ad=it["d"]["addition"], os=os_number))
 
+            # Se faturado, cria registro de pagamento automático
             if faturado:
-                # gera um lançamento em payments para entrar no relatório
                 conn.execute(text("""
                     INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
                     VALUES (:o,:p,:m,:r,:d,:a)
@@ -968,7 +995,7 @@ def compras_novo():
 
         audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)} faturado={int(faturado)}")
         if faturado:
-            flash("Pedido criado como FATURADO e enviado diretamente ao relatório.", "success")
+            flash("Pedido criado como FATURADO e incluído diretamente no relatório.", "success")
         else:
             flash("Pedido criado e enviado ao pagador.", "success")
         return redirect(url_for("compras_lista"))
@@ -1065,10 +1092,53 @@ def pagamentos_detalhe(oid):
 def relatorios_index():
     ret = require_role("admin","pagador")
     if ret: return ret
-    # Sugere HOJE
-    existing = []
-    default_day = date.today().isoformat()
-    return render_template("relatorios.html", existing=existing, default_day=default_day)
+    hoje = date.today().isoformat()
+    # página inline -> não depende de relatorios.html no disco
+    html = """
+    {% extends "base.html" %}
+    {% block title %}Relatórios{% endblock %}
+    {% block content %}
+    <div class="container" style="max-width: 760px; margin: 0 auto;">
+      <h2>Relatórios</h2>
+
+      <div class="card" style="padding:12px; margin-bottom:16px;">
+        <h3 style="margin:0 0 8px;">Relatório Diário</h3>
+        <form method="get" action="{{ url_for('relatorio_diario_xlsx') }}" style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+          <div>
+            <label for="date"><strong>Data do relatório</strong></label><br/>
+            <input type="date" id="date" name="date" value="{{ hoje }}"/>
+          </div>
+          <div>
+            <button class="btn primary" type="submit">Baixar Excel (.xlsx)</button>
+          </div>
+          <div>
+            <a class="btn" href="{{ url_for('relatorio_diario_csv', date=hoje) }}">Baixar CSV</a>
+          </div>
+        </form>
+        <small class="muted">O Excel contém: <b>Fornecedor, Produto, Estoque, Dioptria, Data, Método, Valor</b> e o <b>TOTAL</b>.</small>
+      </div>
+
+      <div class="card" style="padding:12px;">
+        <h3 style="margin:0 0 8px;">Relatório por Período</h3>
+        <form method="get" action="{{ url_for('relatorio_periodo_xlsx') }}" style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+          <div>
+            <label for="start"><strong>De</strong></label><br/>
+            <input type="date" id="start" name="start" value="{{ hoje }}"/>
+          </div>
+          <div>
+            <label for="end"><strong>Até</strong></label><br/>
+            <input type="date" id="end" name="end" value="{{ hoje }}"/>
+          </div>
+          <div>
+            <button class="btn primary" type="submit">Baixar Excel (.xlsx)</button>
+          </div>
+        </form>
+        <small class="muted">Inclui pagamentos feitos e faturados (<b>FATURADO</b>) dentro do intervalo.</small>
+      </div>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, hoje=hoje)
 
 @app.route("/relatorios/diario.xlsx")
 def relatorio_diario_xlsx():
@@ -1081,6 +1151,7 @@ def relatorio_diario_xlsx():
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                          as_attachment=True, download_name=f"pagamentos_{day}.xlsx")
     except Exception as e:
+        # Falha ao gerar XLSX (geralmente por falta de openpyxl) -> fallback para CSV do mesmo dia
         print(f"[RELATORIO] Falha ao gerar XLSX: {e}", flush=True)
         flash("Excel indisponível no momento. Baixando em CSV.", "warning")
         return redirect(url_for("relatorio_diario_csv", date=day))
@@ -1109,6 +1180,23 @@ def relatorio_diario_csv():
     return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
                      as_attachment=True, download_name=f"pagamentos_{day}.csv")
 
+@app.route("/relatorios/periodo.xlsx")
+def relatorio_periodo_xlsx():
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    start = request.args.get("start") or date.today().isoformat()
+    end   = request.args.get("end")   or start
+    try:
+        xbytes = build_excel_bytes_for_period(start, end)
+        return send_file(io.BytesIO(xbytes),
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         as_attachment=True, download_name=f"pagamentos_{start}_a_{end}.xlsx")
+    except Exception as e:
+        print(f"[RELATORIO-PERIODO] Falha ao gerar XLSX: {e}", flush=True)
+        flash("Excel indisponível no momento para o período.", "warning")
+        # Fallback simples: redireciona para o diário do 'start'
+        return redirect(url_for("relatorio_diario_csv", date=start))
+
 # -------- Admin: excluir pedidos --------
 
 @app.route("/admin/orders/<int:oid>/delete", methods=["POST"])
@@ -1122,25 +1210,6 @@ def admin_orders_delete(oid):
     audit("order_delete", f"id={oid}")
     flash("Pedido excluído.", "success")
     return redirect(url_for("compras_lista"))
-
-# ============================ ERROR HANDLERS ============================
-
-@app.errorhandler(500)
-def handle_500(e):
-    # imprime stack trace no log do Render/console
-    print("=== EXCEPTION (500) ===", flush=True)
-    print(traceback.format_exc(), flush=True)
-    print("=======================", flush=True)
-    # página simples para o usuário
-    html = """
-    {% extends "base.html" %}
-    {% block content %}
-    <h2>Erro Interno (500)</h2>
-    <p>Ocorreu um erro ao processar <code>{{ path }}</code>.</p>
-    <p>Tente novamente. O administrador pode verificar os logs do servidor para mais detalhes.</p>
-    {% endblock %}
-    """
-    return render_template_string(html, path=request.path), 500
 
 # ============================ BOOTSTRAP ============================
 
