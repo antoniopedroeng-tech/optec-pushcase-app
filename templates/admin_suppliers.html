@@ -2,22 +2,41 @@
 {% block content %}
 <h2>Admin → Fornecedores</h2>
 
-<form method="post" action="{{ url_for('admin_suppliers_create') }}" style="max-width:420px;">
+<form method="post" action="{{ url_for('admin_suppliers_create') }}" style="max-width:520px; margin-bottom:16px;">
   <label>Nome</label>
   <input name="name" required>
+
+  <div style="margin:8px 0 12px;">
+    <label style="display:flex;align-items:center;gap:8px;">
+      <input type="checkbox" name="billing" checked>
+      <span>Faturamento (é pedido faturado?)</span>
+    </label>
+    <small style="color:#444;">Marcado = <b>Sim</b> (pedido faturado pula o pagador e entra direto no relatório).</small>
+  </div>
+
   <button class="btn primary">Criar</button>
 </form>
 
 <table style="margin-top:16px;">
-  <tr><th>ID</th><th>Nome</th><th>Ativo</th><th>Ações</th></tr>
+  <tr>
+    <th>ID</th>
+    <th>Nome</th>
+    <th>Ativo</th>
+    <th>Faturamento</th>
+    <th>Ações</th>
+  </tr>
   {% for s in suppliers %}
   <tr>
     <td>{{ s.id }}</td>
     <td>{{ s.name }}</td>
     <td>{{ 'Sim' if s.active else 'Não' }}</td>
-    <td>
+    <td>{{ 'Sim' if s.billing else 'Não' }}</td>
+    <td style="white-space:nowrap;">
       <form method="post" action="{{ url_for('admin_suppliers_toggle', sid=s.id) }}" style="display:inline;">
         <button class="btn small">{{ 'Desativar' if s.active else 'Ativar' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_suppliers_toggle_billing', sid=s.id) }}" style="display:inline;">
+        <button class="btn small">{{ 'Faturamento: Não' if s.billing else 'Faturamento: Sim' }}</button>
       </form>
       <form method="post" action="{{ url_for('admin_suppliers_delete', sid=s.id) }}" style="display:inline;" onsubmit="return confirm('Excluir este fornecedor?');">
         <button class="btn small danger">Excluir</button>

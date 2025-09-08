@@ -1,27 +1,93 @@
 {% extends "base.html" %}
 {% block title %}Relatórios{% endblock %}
 {% block content %}
-<div class="container" style="max-width: 760px; margin: 0 auto;">
-  <h2>Relatórios Diários</h2>
-  <p class="text-muted">O relatório de <strong>hoje</strong> só fica disponível <strong>amanhã</strong>, após o fechamento de 24h.</p>
+<div class="container" style="max-width: 860px; margin: 0 auto;">
+  <h2>Relatórios</h2>
 
-  <form class="card" style="padding:12px; margin-bottom:16px;" method="get" action="{{ url_for('relatorio_diario_xlsx') }}">
-    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
-      <div>
-        <label for="date"><strong>Data do relatório</strong></label><br/>
-        <input type="date" id="date" name="date" class="form-control" value="{{ default_day }}"/>
-      </div>
-      <div>
-        <button class="btn btn-primary" type="submit">Baixar Excel (.xlsx)</button>
-      </div>
-      <div>
-        <a class="btn btn-outline-secondary" href="{{ url_for('relatorio_diario_csv') }}">Baixar CSV (ontem)</a>
+  <div class="grid" style="margin-bottom:16px;">
+    <!-- Relatório por Período -->
+    <div>
+      <h3>Relatório por Período</h3>
+      <form method="get" action="{{ url_for('relatorio_periodo_xlsx') }}" id="form-periodo" class="card" style="padding:12px;">
+        <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+          <div>
+            <label for="start"><strong>De</strong></label><br/>
+            <input type="date" id="start" name="start" class="form-control" value="{{ start_default }}" required>
+          </div>
+          <div>
+            <label for="end"><strong>Até</strong></label><br/>
+            <input type="date" id="end" name="end" class="form-control" value="{{ end_default }}" required>
+          </div>
+          <div>
+            <button class="btn primary" type="submit">Baixar Excel (Período)</button>
+          </div>
+          <div>
+            <a class="btn" id="csv-periodo" href="#">Baixar CSV (Período)</a>
+          </div>
+        </div>
+      </form>
+      <div class="alert info" style="margin-top:8px;">
+        Inclui pagamentos feitos pelo pagador e pedidos <b>FATURADOS</b> (ordenados ao final do dia).
       </div>
     </div>
-  </form>
 
-  <div class="alert alert-info">
-    O Excel contém as colunas: <strong>Fornecedor, Produto, Estoque, Dioptria, Data, Valor</strong> e o <strong>TOTAL</strong> no final.
+    <!-- Relatório Diário -->
+    <div>
+      <h3>Relatório Diário</h3>
+      <form class="card" style="padding:12px;" method="get" action="{{ url_for('relatorio_diario_xlsx') }}" id="form-diario">
+        <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+          <div>
+            <label for="date"><strong>Data do relatório</strong></label><br/>
+            <input type="date" id="date" name="date" class="form-control" value="{{ end_default }}" required>
+          </div>
+          <div>
+            <button class="btn" type="submit">Baixar Excel (Dia)</button>
+          </div>
+          <div>
+            <a class="btn" id="csv-diario" href="#">Baixar CSV (Dia)</a>
+          </div>
+        </div>
+      </form>
+      <div class="alert info" style="margin-top:8px;">
+        O Excel contém as colunas: <b>Fornecedor, Produto, Estoque, Dioptria, Data, Método, Valor</b> e o <b>TOTAL</b> no final.
+      </div>
+    </div>
   </div>
 </div>
+
+<script>
+  // CSV Período
+  document.getElementById('csv-periodo').addEventListener('click', function(e){
+    e.preventDefault();
+    const f = document.getElementById('form-periodo');
+    const start = encodeURIComponent(f.start.value);
+    const end = encodeURIComponent(f.end.value);
+    if (!start || !end) { alert('Informe as duas datas.'); return; }
+    if (new Date(f.start.value) > new Date(f.end.value)) {
+      alert('A data inicial não pode ser maior que a final.');
+      return;
+    }
+    window.location.href = "{{ url_for('relatorio_periodo_csv') }}?start=" + start + "&end=" + end;
+  });
+
+  // CSV Diário
+  document.getElementById('csv-diario').addEventListener('click', function(e){
+    e.preventDefault();
+    const f = document.getElementById('form-diario');
+    const d = encodeURIComponent(f.date.value);
+    if (!d) { alert('Informe a data.'); return; }
+    window.location.href = "{{ url_for('relatorio_diario_csv') }}?date=" + d;
+  });
+
+  // Validação do período no submit do Excel
+  const formPeriodo = document.getElementById('form-periodo');
+  formPeriodo.addEventListener('submit', function(e){
+    const s = new Date(formPeriodo.start.value);
+    const ed = new Date(formPeriodo.end.value);
+    if (s > ed) {
+      e.preventDefault();
+      alert('A data inicial não pode ser maior que a final.');
+    }
+  });
+</script>
 {% endblock %}

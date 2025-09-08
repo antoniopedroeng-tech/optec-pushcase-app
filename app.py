@@ -34,7 +34,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS suppliers (
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1
+      active INTEGER NOT NULL DEFAULT 1,
+      billing INTEGER NOT NULL DEFAULT 1  -- 1 = faturamento (sim), 0 = não
     );
 
     CREATE TABLE IF NOT EXISTS products (
@@ -116,6 +117,12 @@ def init_db():
         except Exception:
             pass
 
+        # garantir coluna billing em suppliers (padrão 1 = faturado)
+        try:
+            conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS billing INTEGER NOT NULL DEFAULT 1"))
+        except Exception:
+            pass
+
         # cria admin default se não existir
         exists = conn.execute(text("SELECT COUNT(*) AS n FROM users")).scalar_one()
         if exists == 0:
@@ -133,6 +140,10 @@ def db_all(sql, **params):
 def db_one(sql, **params):
     with engine.connect() as conn:
         return conn.execute(text(sql), params).mappings().first()
+
+def db_scalar(sql, **params):
+    with engine.connect() as conn:
+        return conn.execute(text(sql), params).scalar()
 
 def db_exec(sql, **params):
     with engine.begin() as conn:
@@ -160,23 +171,61 @@ def require_role(*roles):
 
 @app.context_processor
 def inject_globals():
-    return {"now": datetime.utcnow(), "role": session.get("role"), "user": current_user(), "app_name": APP_NAME}
+    return {
+        "now": datetime.utcnow(),
+        "role": session.get("role"),
+        "user": current_user(),
+        "app_name": APP_NAME
+    }
 
-# ============================ RELATÓRIOS (Excel in-memory) ============================
+# ============================ RELATÓRIOS (Excel/CSV) ============================
+
+def _excel_pack(rows, sheet_title="Relatório"):
+    """
+    Empacota 'rows' (lista de listas) num XLSX em memória.
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font
+    except ImportError as e:
+        raise RuntimeError("openpyxl não está instalado") from e
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+    for r in rows:
+        ws.append(r)
+
+    # negrito no header
+    if rows:
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+
+    # larguras básicas
+    for i in range(1, (len(rows[0]) if rows else 6) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 20
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 def build_excel_bytes_for_day(day_str: str) -> bytes:
     """
-    Gera o Excel em memória (sem salvar em disco) para o dia (YYYY-MM-DD).
-    Colunas: Fornecedor, Produto, Estoque, Dioptria, Data, Valor; e linha TOTAL no final.
+    Relatório do DIA (YYYY-MM-DD) com:
+      Fornecedor | Produto | Estoque | Dioptria | Data | Método | Valor
+    Inclui qualquer pagamento, inclusive FATURADO.
     """
-    rows = db_all("""
+    rows_db = db_all("""
         SELECT
             s.name  AS fornecedor,
             p.name  AS produto,
             p.in_stock AS in_stock,
             i.sphere, i.cylinder, i.base, i.addition,
             i.quantity, i.unit_price,
-            DATE(pay.paid_at) AS data
+            DATE(pay.paid_at) AS data,
+            pay.method AS metodo
         FROM payments pay
         JOIN purchase_orders o ON o.id = pay.order_id
         JOIN suppliers s       ON s.id = o.supplier_id
@@ -185,19 +234,6 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
         WHERE DATE(pay.paid_at) = :day
         ORDER BY s.name, p.name
     """, day=day_str)
-
-    try:
-        from openpyxl import Workbook
-        from openpyxl.utils import get_column_letter
-        from openpyxl.styles import Font
-    except ImportError as e:
-        # Sem openpyxl, a rota chamadora decide fallback para CSV
-        raise RuntimeError("openpyxl não está instalado") from e
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Pagamentos do Dia"
-    ws.append(["Fornecedor", "Produto", "Estoque", "Dioptria", "Data", "Valor"])
 
     def fmt_dioptria(r):
         if r["sphere"] is not None or r["cylinder"] is not None:
@@ -209,32 +245,77 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
             add = f"+{r['addition']:.2f}" if r["addition"] is not None else "-"
             return f"Base {b} / Adição {add}"
 
+    header = ["Fornecedor","Produto","Estoque","Dioptria","Data","Método","Valor"]
+    data_rows = [header]
     grand_total = 0.0
-    for r in rows:
+    for r in rows_db:
         subtotal = float(r["quantity"] or 0) * float(r["unit_price"] or 0.0)
         grand_total += subtotal
-        ws.append([
+        data_rows.append([
             r["fornecedor"],
             r["produto"],
             "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
             fmt_dioptria(r),
-            r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"]),
+            (r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"])),
+            r["metodo"] or "",
             float(f"{subtotal:.2f}")
         ])
 
-    # Linha de TOTAL
-    ws.append(["", "", "", "", "", ""])
-    ws.append(["", "", "", "", "TOTAL", float(f"{grand_total:.2f}")])
-    ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
-    ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
+    data_rows.append(["","","","","","", ""])
+    data_rows.append(["","","","","TOTAL","", float(f"{grand_total:.2f}")])
+    return _excel_pack(data_rows, sheet_title="Pagamentos do Dia")
 
-    for i, w in enumerate([18, 28, 12, 26, 12, 14], 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
+    """
+    Relatório por PERÍODO [start..end], inclusivo, mesmas colunas do diário.
+    """
+    rows_db = db_all("""
+        SELECT
+            s.name  AS fornecedor,
+            p.name  AS produto,
+            p.in_stock AS in_stock,
+            i.sphere, i.cylinder, i.base, i.addition,
+            i.quantity, i.unit_price,
+            DATE(pay.paid_at) AS data,
+            pay.method AS metodo
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s       ON s.id = o.supplier_id
+        JOIN purchase_items i  ON i.order_id = o.id
+        JOIN products p        ON p.id = i.product_id
+        WHERE DATE(pay.paid_at) BETWEEN :start AND :end
+        ORDER BY DATE(pay.paid_at), s.name, p.name
+    """, start=start_str, end=end_str)
 
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return bio.getvalue()
+    def fmt_dioptria(r):
+        if r["sphere"] is not None or r["cylinder"] is not None:
+            esf = f"{r['sphere']:+.2f}" if r["sphere"] is not None else "-"
+            cil = f"{r['cylinder']:+.2f}" if r["cylinder"] is not None else "-"
+            return f"Esf {esf} / Cil {cil}"
+        else:
+            b = f"{r['base']:.2f}" if r["base"] is not None else "-"
+            add = f"+{r['addition']:.2f}" if r["addition"] is not None else "-"
+            return f"Base {b} / Adição {add}"
+
+    header = ["Fornecedor","Produto","Estoque","Dioptria","Data","Método","Valor"]
+    data_rows = [header]
+    grand_total = 0.0
+    for r in rows_db:
+        subtotal = float(r["quantity"] or 0) * float(r["unit_price"] or 0.0)
+        grand_total += subtotal
+        data_rows.append([
+            r["fornecedor"],
+            r["produto"],
+            "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
+            fmt_dioptria(r),
+            (r["data"].isoformat() if hasattr(r["data"], "isoformat") else str(r["data"])),
+            r["metodo"] or "",
+            float(f"{subtotal:.2f}")
+        ])
+
+    data_rows.append(["","","","","","", ""])
+    data_rows.append(["","","","","TOTAL","", float(f"{grand_total:.2f}")])
+    return _excel_pack(data_rows, sheet_title="Pagamentos (Período)")
 
 # ============================ ROTAS ============================
 
@@ -335,10 +416,12 @@ def admin_suppliers():
 def admin_suppliers_create():
     if require_role("admin"): return require_role("admin")
     name = (request.form.get("name") or "").strip()
-    if not name: flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
+    billing = 1 if (request.form.get("billing") in ("on","1","true","True", "checked")) else 1  # padrão SIM
+    if not name:
+        flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
     try:
-        db_exec("INSERT INTO suppliers (name, active) VALUES (:n,1)", n=name)
-        audit("supplier_create", name); flash("Fornecedor criado.", "success")
+        db_exec("INSERT INTO suppliers (name, active, billing) VALUES (:n,1,:b)", n=name, b=billing)
+        audit("supplier_create", f"{name} billing={billing}"); flash("Fornecedor criado.", "success")
     except Exception:
         flash("Fornecedor já existe.", "error")
     return redirect(url_for("admin_suppliers"))
@@ -350,7 +433,19 @@ def admin_suppliers_toggle(sid):
     if not s: flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
     new_active = 0 if s["active"] else 1
     db_exec("UPDATE suppliers SET active=:a WHERE id=:id", a=new_active, id=sid)
-    audit("supplier_toggle", f"id={sid} active={new_active}"); return redirect(url_for("admin_suppliers"))
+    audit("supplier_toggle", f"id={sid} active={new_active}")
+    return redirect(url_for("admin_suppliers"))
+
+@app.route("/admin/suppliers/<int:sid>/toggle-billing", methods=["POST"])
+def admin_suppliers_toggle_billing(sid):
+    if require_role("admin"): return require_role("admin")
+    s = db_one("SELECT * FROM suppliers WHERE id=:id", id=sid)
+    if not s: flash("Fornecedor não encontrado.", "error"); return redirect(url_for("admin_suppliers"))
+    new_billing = 0 if s["billing"] else 1
+    db_exec("UPDATE suppliers SET billing=:b WHERE id=:id", b=new_billing, id=sid)
+    audit("supplier_toggle_billing", f"id={sid} billing={new_billing}")
+    flash("Faturamento atualizado.", "success")
+    return redirect(url_for("admin_suppliers"))
 
 @app.route("/admin/suppliers/<int:sid>/delete", methods=["POST"])
 def admin_suppliers_delete(sid):
@@ -400,7 +495,8 @@ def admin_products_toggle(pid):
     if not p: flash("Produto não encontrado.", "error"); return redirect(url_for("admin_products"))
     new_active = 0 if p["active"] else 1
     db_exec("UPDATE products SET active=:a WHERE id=:id", a=new_active, id=pid)
-    audit("product_toggle", f"id={pid} active={new_active}"); return redirect(url_for("admin_products"))
+    audit("product_toggle", f"id={pid} active={new_active}")
+    return redirect(url_for("admin_products"))
 
 @app.route("/admin/products/<int:pid>/delete", methods=["POST"])
 def admin_products_delete(pid):
@@ -456,7 +552,8 @@ def admin_rules_toggle(rid):
     if not r: flash("Regra não encontrada.", "error"); return redirect(url_for("admin_rules"))
     new_active = 0 if r["active"] else 1
     db_exec("UPDATE rules SET active=:a WHERE id=:id", a=new_active, id=rid)
-    audit("rule_toggle", f"id={rid} active={new_active}"); return redirect(url_for("admin_rules"))
+    audit("rule_toggle", f"id={rid} active={new_active}")
+    return redirect(url_for("admin_rules"))
 
 # -------- Importação em massa (ADMIN) --------
 
@@ -487,9 +584,9 @@ def admin_import_template():
 
     ws1 = wb.active
     ws1.title = "Suppliers"
-    ws1.append(["name", "active"])
-    ws1.append(["Fornecedor Exemplo A", 1])
-    ws1.append(["Fornecedor Exemplo B", 1])
+    ws1.append(["name", "active", "billing"])
+    ws1.append(["Fornecedor Exemplo A", 1, 1])
+    ws1.append(["Fornecedor Exemplo B", 1, 0])
     for cell in ws1[1]:
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
@@ -540,7 +637,7 @@ def admin_import():
                         ws = wb["Suppliers"]
                         headers = [str(c.value).strip().lower() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
                         def idx(col): return headers.index(col) if col in headers else -1
-                        i_name = idx("name"); i_active = idx("active")
+                        i_name = idx("name"); i_active = idx("active"); i_billing = idx("billing")
                         if i_name == -1:
                             report["errors"].append("Suppliers: coluna obrigatória 'name' não encontrada.")
                         else:
@@ -549,12 +646,13 @@ def admin_import():
                                 name = (row[i_name] or "").strip() if row[i_name] else ""
                                 if not name: continue
                                 active = int(row[i_active]) if (i_active != -1 and row[i_active] is not None) else 1
+                                billing = int(row[i_billing]) if (i_billing != -1 and row[i_billing] is not None) else 1
                                 res = conn.execute(text("""
-                                    INSERT INTO suppliers (name, active)
-                                    VALUES (:n, :a)
-                                    ON CONFLICT (name) DO UPDATE SET active=EXCLUDED.active
+                                    INSERT INTO suppliers (name, active, billing)
+                                    VALUES (:n, :a, :b)
+                                    ON CONFLICT (name) DO UPDATE SET active=EXCLUDED.active, billing=EXCLUDED.billing
                                     RETURNING (xmax = 0) AS inserted
-                                """), dict(n=name, a=active))
+                                """), dict(n=name, a=active, b=billing))
                                 inserted = res.fetchone()[0]
                                 if inserted: report["suppliers"]["inserted"] += 1
                                 else: report["suppliers"]["updated"] += 1
@@ -626,8 +724,8 @@ def admin_import():
                                 supp = conn.execute(text("SELECT id FROM suppliers WHERE name=:n"), dict(n=sn)).mappings().first()
                                 if not supp:
                                     supp = conn.execute(text("""
-                                        INSERT INTO suppliers (name, active)
-                                        VALUES (:n, 1)
+                                        INSERT INTO suppliers (name, active, billing)
+                                        VALUES (:n, 1, 1)
                                         ON CONFLICT (name) DO NOTHING
                                         RETURNING id
                                     """), dict(n=sn)).mappings().first()
@@ -664,7 +762,7 @@ def admin_import():
     <div class="container" style="max-width: 900px; margin: 0 auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;">
         <h2>Importar planilha (Excel .xlsx)</h2>
-        <a class="btn btn-sm btn-primary" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
+        <a class="btn primary" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
       </div>
       <p>Use o modelo com abas <strong>Suppliers</strong>, <strong>Products</strong> e <strong>Rules</strong>.</p>
       <form method="post" enctype="multipart/form-data" style="margin-top: 16px;">
@@ -702,7 +800,7 @@ def compras_novo():
 
     combos = db_all("""
         SELECT r.id as rule_id, p.id as product_id, p.name as product_name, p.code as product_code, p.kind,
-               s.id as supplier_id, s.name as supplier_name, r.max_price
+               s.id as supplier_id, s.name as supplier_name, r.max_price, s.billing
         FROM rules r
         JOIN products p ON p.id = r.product_id
         JOIN suppliers s ON s.id = r.supplier_id
@@ -754,8 +852,10 @@ def compras_novo():
 
         # Validação de fornecedor/regra D1
         rule_main = db_one("""
-            SELECT r.*, p.kind as product_kind
-            FROM rules r JOIN products p ON p.id = r.product_id
+            SELECT r.*, p.kind as product_kind, s.billing
+            FROM rules r
+            JOIN products p ON p.id = r.product_id
+            JOIN suppliers s ON s.id = r.supplier_id
             WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
         """, pid=product_id, sid=supplier_main)
         if not rule_main:
@@ -811,8 +911,10 @@ def compras_novo():
                 if not supplier_second:
                     flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
                 rule_second = db_one("""
-                    SELECT r.*, p.kind as product_kind
-                    FROM rules r JOIN products p ON p.id = r.product_id
+                    SELECT r.*, p.kind as product_kind, s.billing
+                    FROM rules r
+                    JOIN products p ON p.id = r.product_id
+                    JOIN suppliers s ON s.id = r.supplier_id
                     WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
                 """, pid=product_id, sid=supplier_second)
                 if not rule_second:
@@ -834,8 +936,6 @@ def compras_novo():
             items_to_add.append({"product_id": product_id, "supplier_id": supplier_second, "price": price_second, "d": d2})
 
         # Limite de 2 por OS
-        existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
-        existing_n = int(existing["n"] if existing else 0)
         if existing_n + len(items_to_add) > 2:
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
             return render_template("compras_novo.html", combos=combos, products=products)
@@ -856,8 +956,27 @@ def compras_novo():
                 """), dict(o=order_id, p=it["product_id"], pr=it["price"],
                            sf=it["d"]["sphere"], cl=it["d"]["cylinder"], ba=it["d"]["base"],
                            ad=it["d"]["addition"], os=os_number))
-        audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)}")
-        flash("Pedido criado e enviado ao pagador.", "success")
+
+            # Se o fornecedor do cabeçalho (1º item) é faturado, pular pagador
+            supplier_info = conn.execute(text("SELECT billing FROM suppliers WHERE id=:id"), dict(id=items_to_add[0]["supplier_id"])).mappings().first()
+            is_billing = int(supplier_info["billing"] or 0) == 1
+
+            if is_billing:
+                # marcar pedido como PAGO e criar um registro em payments com método "FATURADO"
+                conn.execute(text("UPDATE purchase_orders SET status='PAGO', updated_at=:u WHERE id=:id"),
+                             dict(u=datetime.utcnow(), id=order_id))
+                conn.execute(text("""
+                    INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
+                    VALUES (:o,:p,'FATURADO','Faturado',:d,:a)
+                """), dict(o=order_id, p=session["user_id"], d=datetime.utcnow(), a=total))
+
+        if rule_main and int(rule_main["billing"] or 0) == 1:
+            audit("order_create_faturado", f"id={order_id} os={os_number} n_items={len(items_to_add)}")
+            flash("Pedido criado como FATURADO e incluído no relatório.", "success")
+        else:
+            audit("order_create", f"id={order_id} os={os_number} n_items={len(items_to_add)}")
+            flash("Pedido criado e enviado ao pagador.", "success")
+
         return redirect(url_for("compras_lista"))
 
     return render_template("compras_novo.html", combos=combos, products=products)
@@ -898,6 +1017,7 @@ def compras_detalhe(oid):
 @app.route("/pagamentos")
 def pagamentos_lista():
     if require_role("pagador","admin"): return require_role("pagador","admin")
+    # Só pendentes (faturados já viram PAGO e não aparecem aqui)
     orders = db_all("""
         SELECT o.*, u.username as buyer_name, s.name as supplier_name
         FROM purchase_orders o
@@ -912,19 +1032,24 @@ def pagamentos_lista():
 def pagamentos_detalhe(oid):
     if require_role("pagador","admin"): return require_role("pagador","admin")
     order = db_one("""
-        SELECT o.*, u.username as buyer_name, s.name as supplier_name
+        SELECT o.*, u.username as buyer_name, s.name as supplier_name, s.billing
         FROM purchase_orders o
         JOIN users u ON u.id = o.buyer_id
         JOIN suppliers s ON s.id = o.supplier_id
         WHERE o.id=:id
     """, id=oid)
+    if not order:
+        flash("Pedido não encontrado.", "error"); return redirect(url_for("pagamentos_lista"))
+    if int(order["billing"] or 0) == 1:
+        flash("Este pedido é FATURADO e não deve ser pago aqui.", "info")
+        return redirect(url_for("pagamentos_lista"))
+
     items = db_all("""
         SELECT i.*, p.name as product_name, p.kind as product_kind
         FROM purchase_items i JOIN products p ON p.id = i.product_id
         WHERE i.order_id=:id
     """, id=oid)
-    if not order:
-        flash("Pedido não encontrado.", "error"); return redirect(url_for("pagamentos_lista"))
+
     if request.method == "POST":
         method = (request.form.get("method") or "PIX").strip()
         reference = (request.form.get("reference") or "").strip()
@@ -947,10 +1072,10 @@ def pagamentos_detalhe(oid):
 @app.route("/relatorios")
 def relatorios_index():
     if require_role("admin","pagador"): return require_role("admin","pagador")
-    # Sugere HOJE
-    existing = []
-    default_day = date.today().isoformat()
-    return render_template("relatorios.html", existing=existing, default_day=default_day)
+    today = date.today().isoformat()
+    start_default = (date.today() - timedelta(days=7)).isoformat()
+    end_default = today
+    return render_template("relatorios.html", start_default=start_default, end_default=end_default)
 
 @app.route("/relatorios/diario.xlsx")
 def relatorio_diario_xlsx():
@@ -990,6 +1115,56 @@ def relatorio_diario_csv():
     return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
                      as_attachment=True, download_name=f"pagamentos_{day}.csv")
 
+# Relatório por período (XLSX)
+@app.route("/relatorios/periodo.xlsx")
+def relatorio_periodo_xlsx():
+    if require_role("admin","pagador"): return require_role("admin","pagador")
+    start = request.args.get("start") or (date.today() - timedelta(days=7)).isoformat()
+    end   = request.args.get("end")   or date.today().isoformat()
+    # validação simples
+    if start > end:
+        flash("A data inicial não pode ser maior que a final.", "error")
+        return redirect(url_for("relatorios_index"))
+    try:
+        xbytes = build_excel_bytes_for_period(start, end)
+        return send_file(io.BytesIO(xbytes),
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         as_attachment=True, download_name=f"pagamentos_{start}_a_{end}.xlsx")
+    except Exception as e:
+        print(f"[RELATORIO] Falha XLSX período: {e}", flush=True)
+        flash("Excel indisponível no momento. Baixando em CSV.", "warning")
+        return redirect(url_for("relatorio_periodo_csv", start=start, end=end))
+
+# Relatório por período (CSV)
+@app.route("/relatorios/periodo.csv")
+def relatorio_periodo_csv():
+    if require_role("admin","pagador"): return require_role("admin","pagador")
+    start = request.args.get("start") or (date.today() - timedelta(days=7)).isoformat()
+    end   = request.args.get("end")   or date.today().isoformat()
+    if start > end:
+        flash("A data inicial não pode ser maior que a final.", "error")
+        return redirect(url_for("relatorios_index"))
+
+    rows = db_all("""
+        SELECT pay.paid_at, pay.amount, pay.method, pay.reference,
+               o.id as order_id, s.name as supplier_name, u.username as payer_name
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        JOIN users u ON u.id = pay.payer_id
+        WHERE DATE(pay.paid_at) BETWEEN :start AND :end
+        ORDER BY pay.paid_at ASC
+    """, start=start, end=end)
+
+    output = io.StringIO(); writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["paid_at","amount","method","reference","order_id","supplier","payer"])
+    for r in rows:
+        paid_at = r["paid_at"].isoformat(sep=" ", timespec="seconds") if hasattr(r["paid_at"], "isoformat") else str(r["paid_at"])
+        writer.writerow([paid_at, f"{float(r['amount']):.2f}", r["method"], r["reference"], r["order_id"], r["supplier_name"], r["payer_name"]])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
+                     as_attachment=True, download_name=f"pagamentos_{start}_a_{end}.csv")
+
 # -------- Admin: excluir pedidos --------
 
 @app.route("/admin/orders/<int:oid>/delete", methods=["POST"])
@@ -1013,4 +1188,5 @@ except Exception as e:
 
 # Execução local (opcional)
 if __name__ == "__main__":
+    # Para rodar local, defina DATABASE_URL antes (ex.: sqlite:///local.db)
     app.run(host="0.0.0.0", port=5000, debug=True)
