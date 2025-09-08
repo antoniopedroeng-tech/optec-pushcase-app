@@ -1116,16 +1116,19 @@ def compras_lista():
         SELECT
             o.*,
             s.name AS supplier_name,
-            EXISTS (SELECT 1 FROM payments pay WHERE pay.order_id = o.id AND pay.method = 'FATURADO') AS is_faturado
+            CASE
+              WHEN o.status = 'PAGO' AND EXISTS (
+                SELECT 1 FROM payments pay
+                WHERE pay.order_id = o.id AND pay.method = 'FATURADO'
+              )
+              THEN 'FATURADO'
+              ELSE o.status
+            END AS status_exibido
         FROM purchase_orders o
         JOIN suppliers s ON s.id = o.supplier_id
         WHERE o.buyer_id=:b
         ORDER BY o.id DESC
     """, b=session["user_id"])
-
-    for o in orders:
-        if (o.get("status") == "PAGO") and (o.get("is_faturado") in (True, 1, "t")):
-            o["status"] = "FATURADO"
 
     return render_template("compras_lista.html", orders=orders)
 
