@@ -14,7 +14,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")  # fornecido pelo Render Postgres
 TIMEZONE_TZ = os.environ.get("TZ", "America/Fortaleza")
 
 # ============================ ENGINE / SESSION ============================
-# Observação: se DATABASE_URL estiver vazio/None, create_engine quebra.
 if not DATABASE_URL:
     print("[BOOT] ATENÇÃO: DATABASE_URL não está definido! Defina a variável de ambiente.", flush=True)
 
@@ -479,35 +478,52 @@ def admin_users_create():
     except Exception:
         flash("Usuário já existe.", "error")
     return redirect(url_for("admin_users"))
-
 @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
 def admin_users_delete(uid):
     ret = require_role("admin")
     if ret: return ret
+
     if uid == session.get("user_id"):
         flash("Não é possível excluir o próprio usuário logado.", "error")
         return redirect(url_for("admin_users"))
 
-    refs = {
-        "pedidos": db_one("SELECT 1 FROM purchase_orders WHERE buyer_id=:id LIMIT 1", id=uid),
-        "pagamentos": db_one("SELECT 1 FROM payments WHERE payer_id=:id LIMIT 1", id=uid),
-        "auditoria": db_one("SELECT 1 FROM audit_log WHERE user_id=:id LIMIT 1", id=uid),
-    }
-    if any(refs.values()):
-        detalhes = []
-        if refs["pedidos"]: detalhes.append("pedidos vinculados")
-        if refs["pagamentos"]: detalhes.append("pagamentos vinculados")
-        if refs["auditoria"]: detalhes.append("registros de auditoria")
-        flash("Não é possível excluir este usuário: há " + ", ".join(detalhes) +
-              ". Você pode manter o histórico e apenas mudar o papel/credenciais.", "error")
+    # Confere se o usuário existe
+    urow = db_one("SELECT id, username FROM users WHERE id=:id", id=uid)
+    if not urow:
+        flash("Usuário não encontrado.", "error")
         return redirect(url_for("admin_users"))
 
     try:
-        db_exec("DELETE FROM users WHERE id=:id", id=uid)
-        audit("user_delete", f"id={uid}")
-        flash("Usuário removido.", "success")
+        from werkzeug.security import generate_password_hash
+        with engine.begin() as conn:
+            # Garante usuário sentinela "(deleted)" para manter integridade (colunas NOT NULL)
+            sentinel = conn.execute(text("SELECT id FROM users WHERE username='(deleted)'")).mappings().first()
+            if not sentinel:
+                # Cria com um hash qualquer, papel 'comprador' (irrelevante; ninguém logará)
+                sid = conn.execute(text("""
+                    INSERT INTO users (username, password_hash, role, created_at)
+                    VALUES (:u, :p, 'comprador', :c)
+                    RETURNING id
+                """), dict(u="(deleted)", p=generate_password_hash("!deleted!"), c=datetime.utcnow())).scalar_one()
+            else:
+                sid = sentinel["id"]
+
+            # Reatribui referências ao sentinela para não violar NOT NULL / FK
+            conn.execute(text("UPDATE purchase_orders SET buyer_id = :sid WHERE buyer_id = :uid"),
+                         dict(sid=sid, uid=uid))
+            conn.execute(text("UPDATE payments       SET payer_id = :sid WHERE payer_id = :uid"),
+                         dict(sid=sid, uid=uid))
+            conn.execute(text("UPDATE audit_log      SET user_id  = :sid WHERE user_id  = :uid"),
+                         dict(sid=sid, uid=uid))
+
+            # Exclui o usuário original
+            conn.execute(text("DELETE FROM users WHERE id=:id"), dict(id=uid))
+
+        audit("user_delete", f"id={uid}/username={urow['username']}")
+        flash("Usuário excluído com sucesso.", "success")
     except Exception as e:
-        flash(f"Falha ao excluir usuário (restrições de integridade?): {e}", "error")
+        flash(f"Falha ao excluir usuário: {e}", "error")
+
     return redirect(url_for("admin_users"))
 
 # -------- Admin: Fornecedores --------
