@@ -53,10 +53,52 @@
       </div>
     </div>
   </div>
+
+  <hr style="margin:24px 0;"/>
+
+  <!-- RANKING DE PRODUTOS NO PERÍODO -->
+  <h3>Ranking de Produtos no Período</h3>
+  <div class="card" style="padding:12px;">
+    <div style="display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+      <div><small class="muted">Agrupado por produto (ignora fornecedor e dioptrias). Ordenado da maior <b>quantidade</b> para a menor.</small></div>
+      <div><button id="btn-atualizar-ranking" class="btn">Atualizar ranking</button></div>
+    </div>
+    <div style="overflow:auto; margin-top:12px;">
+      <table id="ranking-table" class="table">
+        <thead>
+          <tr>
+            <th>Código</th>
+            <th>Produto</th>
+            <th>Quantidade</th>
+            <th>Valor total</th>
+            <th style="width:1%;">Ações</th>
+          </tr>
+        </thead>
+        <tbody id="ranking-body">
+          <tr><td colspan="5" class="muted">Carregando…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- MODAL: GRADE (dioptrias) -->
+  <div id="modal-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:999;"></div>
+  <div id="modal-grade" style="display:none; position:fixed; top:10%; left:50%; transform:translateX(-50%); width:min(720px, 92vw); background:#fff; border:1px solid #ddd; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,.2); z-index:1000;">
+    <div style="padding:12px 16px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;">
+      <strong id="modal-title">Grade</strong>
+      <button id="modal-close" class="btn">Fechar</button>
+    </div>
+    <div style="padding:12px 16px; max-height:60vh; overflow:auto;">
+      <table class="table">
+        <thead><tr><th>Combinação</th><th>Quantidade</th></tr></thead>
+        <tbody id="modal-body"><tr><td colspan="2" class="muted">Carregando…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <script>
-  // CSV Período
+  // ====== Links CSV existentes ======
   document.getElementById('csv-periodo').addEventListener('click', function(e){
     e.preventDefault();
     const f = document.getElementById('form-periodo');
@@ -70,7 +112,6 @@
     window.location.href = "{{ url_for('relatorio_periodo_csv') }}?start=" + start + "&end=" + end;
   });
 
-  // CSV Diário
   document.getElementById('csv-diario').addEventListener('click', function(e){
     e.preventDefault();
     const f = document.getElementById('form-diario');
@@ -79,7 +120,6 @@
     window.location.href = "{{ url_for('relatorio_diario_csv') }}?date=" + d;
   });
 
-  // Validação do período no submit do Excel
   const formPeriodo = document.getElementById('form-periodo');
   formPeriodo.addEventListener('submit', function(e){
     const s = new Date(formPeriodo.start.value);
@@ -89,5 +129,111 @@
       alert('A data inicial não pode ser maior que a final.');
     }
   });
+
+  // ====== Helpers ======
+  function brMoney(v){ try{ return (v).toLocaleString('pt-BR', {style:'currency', currency:'BRL'}); }catch(e){ return v; } }
+
+  // ====== Ranking: carregar e desenhar ======
+  async function loadRanking(){
+    const s = formPeriodo.start.value;
+    const e = formPeriodo.end.value;
+    if (!s || !e){ return; }
+
+    const tbody = document.getElementById('ranking-body');
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">Carregando…</td></tr>`;
+
+    try{
+      const url = new URL("{{ url_for('relatorios_ranking_json') }}", window.location.origin);
+      url.searchParams.set('start', s);
+      url.searchParams.set('end', e);
+      const resp = await fetch(url.toString(), {credentials: 'same-origin'});
+      const data = await resp.json();
+
+      if (!Array.isArray(data) || data.length === 0){
+        tbody.innerHTML = `<tr><td colspan="5" class="muted">Nenhum item no período.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = "";
+      for (const r of data){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.code || ''}</td>
+          <td>${r.product}</td>
+          <td>${r.qty}</td>
+          <td>${brMoney(r.total_value || 0)}</td>
+          <td><button class="btn small" data-pid="${r.product_id}" data-name="${r.product}">Mostrar grade</button></td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      // Bind do botão "Mostrar grade"
+      tbody.querySelectorAll('button[data-pid]').forEach(btn=>{
+        btn.addEventListener('click', ()=> openGrade(btn.dataset.pid, btn.dataset.name));
+      });
+
+    }catch(err){
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">Erro ao carregar ranking.</td></tr>`;
+      console.error(err);
+    }
+  }
+
+  // ====== Modal da grade ======
+  const modal = document.getElementById('modal-grade');
+  const backdrop = document.getElementById('modal-backdrop');
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  backdrop.addEventListener('click', closeModal);
+
+  function openModal(){
+    backdrop.style.display = 'block';
+    modal.style.display = 'block';
+  }
+  function closeModal(){
+    modal.style.display = 'none';
+    backdrop.style.display = 'none';
+  }
+
+  async function openGrade(pid, name){
+    modalTitle.textContent = `Grade — ${name}`;
+    modalBody.innerHTML = `<tr><td colspan="2" class="muted">Carregando…</td></tr>`;
+    openModal();
+
+    try{
+      // Gera URL /relatorios/ranking/0/grade.json e troca /0/ por /pid/
+      let base = "{{ url_for('relatorios_ranking_grade_json', pid=0) }}";
+      const url = new URL(base.replace('/0/', `/${pid}/`), window.location.origin);
+      url.searchParams.set('start', formPeriodo.start.value);
+      url.searchParams.set('end', formPeriodo.end.value);
+
+      const resp = await fetch(url.toString(), {credentials: 'same-origin'});
+      const data = await resp.json();
+
+      if (!data || !Array.isArray(data.rows) || data.rows.length === 0){
+        modalBody.innerHTML = `<tr><td colspan="2" class="muted">Sem combinações no período.</td></tr>`;
+        return;
+      }
+
+      modalBody.innerHTML = "";
+      for (const r of data.rows){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${r.label}</td><td>${r.qty}</td>`;
+        modalBody.appendChild(tr);
+      }
+    }catch(err){
+      modalBody.innerHTML = `<tr><td colspan="2" class="muted">Erro ao carregar a grade.</td></tr>`;
+      console.error(err);
+    }
+  }
+
+  // Botão de atualizar
+  document.getElementById('btn-atualizar-ranking').addEventListener('click', loadRanking);
+  // Recarrega quando datas mudam
+  ['start','end'].forEach(id=>{
+    document.getElementById(id).addEventListener('change', loadRanking);
+  });
+  // Carrega na abertura
+  loadRanking();
 </script>
 {% endblock %}

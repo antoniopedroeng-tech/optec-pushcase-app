@@ -3,7 +3,7 @@ import io
 import csv
 import traceback
 from datetime import datetime, date, timedelta
-from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash, send_file
+from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash, send_file, jsonify
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from werkzeug.exceptions import HTTPException
@@ -1236,6 +1236,9 @@ def relatorios_index():
     ret = require_role("admin","pagador")
     if ret: return ret
     hoje = date.today().isoformat()
+    return render_template("relatorios.html", start_default=hoje, end_default=hoje)
+
+    hoje = date.today().isoformat()
     html = """
     {% extends "base.html" %}
     {% block title %}Relatórios{% endblock %}
@@ -1350,6 +1353,133 @@ def admin_orders_delete(oid):
     audit("order_delete", f"id={oid}")
     flash("Pedido excluído.", "success")
     return redirect(url_for("compras_lista"))
+
+@app.route("/relatorios/periodo.csv")
+def relatorio_periodo_csv():
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    start = request.args.get("start") or date.today().isoformat()
+    end   = request.args.get("end")   or start
+    rows = db_all("""
+        SELECT
+            pay.paid_at, pay.amount, pay.method, pay.reference,
+            o.id as order_id, s.name as supplier_name, u.username as payer_name,
+            i.quantity, i.unit_price, p.name as product_name, p.code as product_code
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s ON s.id = o.supplier_id
+        JOIN users u     ON u.id = pay.payer_id
+        JOIN purchase_items i ON i.order_id = o.id
+        JOIN products p       ON p.id = i.product_id
+        WHERE DATE(pay.paid_at) BETWEEN :d1 AND :d2
+        ORDER BY pay.paid_at ASC
+    """, d1=start, d2=end)
+
+    output = io.StringIO(); writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["paid_at","amount","method","reference","order_id","supplier","payer","product_code","product_name","quantity","unit_price","item_total"])
+    for r in rows:
+        paid_at = r["paid_at"].isoformat(sep=" ", timespec="seconds") if hasattr(r["paid_at"], "isoformat") else str(r["paid_at"])
+        q = int(r["quantity"] or 0); up = float(r["unit_price"] or 0.0); itotal = q * up
+        writer.writerow([paid_at, f"{float(r['amount']):.2f}", r["method"] or "", r["reference"] or "",
+                         r["order_id"], r["supplier_name"], r["payer_name"],
+                         r["product_code"] or "", r["product_name"] or "", q, f"{up:.2f}", f"{itotal:.2f}"])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv; charset=utf-8",
+                     as_attachment=True, download_name=f"pagamentos_{start}_a_{end}.csv")
+
+@app.get("/relatorios/ranking.json")
+def relatorios_ranking_json():
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    start = request.args.get("start") or request.args.get("date") or date.today().isoformat()
+    end   = request.args.get("end")   or start
+    limit = request.args.get("limit", type=int) or 100
+
+    rows = db_all("""
+        SELECT
+            p.id   AS product_id,
+            COALESCE(p.code,'') AS code,
+            p.name AS product_name,
+            SUM(i.quantity)                 AS qty,
+            SUM(i.quantity * i.unit_price)  AS total_value
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN purchase_items i  ON i.order_id = o.id
+        JOIN products p        ON p.id = i.product_id
+        WHERE DATE(pay.paid_at) BETWEEN :d1 AND :d2
+        GROUP BY p.id, p.code, p.name
+        ORDER BY qty DESC, total_value DESC
+        LIMIT :lim
+    """, d1=start, d2=end, lim=limit)
+
+    data = [
+        {
+            "product_id": r["product_id"],
+            "code": r["code"],
+            "product": r["product_name"],
+            "qty": int(r["qty"] or 0),
+            "total_value": float(r["total_value"] or 0.0),
+        }
+        for r in rows
+    ]
+    return jsonify(data)
+
+@app.get("/relatorios/ranking/<int:pid>/grade.json")
+def relatorios_ranking_grade_json(pid):
+    ret = require_role("admin","pagador")
+    if ret: return ret
+    start = request.args.get("start") or date.today().isoformat()
+    end   = request.args.get("end")   or start
+
+    prod = db_one("SELECT id, name, code, kind FROM products WHERE id=:id", id=pid)
+    if not prod:
+        return jsonify({"error": "Produto não encontrado"}), 404
+
+    kind = (prod["kind"] or "").lower()
+    if kind == "lente":
+        rows = db_all("""
+            SELECT i.sphere AS sphere, i.cylinder AS cylinder, SUM(i.quantity) AS qty
+            FROM payments pay
+            JOIN purchase_orders o ON o.id = pay.order_id
+            JOIN purchase_items i  ON i.order_id = o.id
+            WHERE i.product_id = :pid AND DATE(pay.paid_at) BETWEEN :d1 AND :d2
+            GROUP BY i.sphere, i.cylinder
+            ORDER BY qty DESC
+            LIMIT 200
+        """, pid=pid, d1=start, d2=end)
+
+        def label(r):
+            esf = f"{r['sphere']:+.2f}" if r['sphere'] is not None else "-"
+            cil = f"{r['cylinder']:+.2f}" if r['cylinder'] is not None else "-"
+            return f"Esf {esf} / Cil {cil}"
+
+        data = [{"label": label(r), "qty": int(r["qty"] or 0)} for r in rows]
+
+    else:
+        rows = db_all("""
+            SELECT i.base AS base, i.addition AS addition, SUM(i.quantity) AS qty
+            FROM payments pay
+            JOIN purchase_orders o ON o.id = pay.order_id
+            JOIN purchase_items i  ON i.order_id = o.id
+            WHERE i.product_id = :pid AND DATE(pay.paid_at) BETWEEN :d1 AND :d2
+            GROUP BY i.base, i.addition
+            ORDER BY qty DESC
+            LIMIT 200
+        """, pid=pid, d1=start, d2=end)
+
+        def label(r):
+            base = f"{r['base']:.2f}" if r['base'] is not None else "-"
+            add  = f"+{r['addition']:.2f}" if r['addition'] is not None else "-"
+            return f"Base {base} / Adição {add}"
+
+        data = [{"label": label(r), "qty": int(r["qty"] or 0)} for r in rows]
+
+    return jsonify({
+        "product_id": pid,
+        "product": prod["name"],
+        "kind": kind,
+        "rows": data
+    })
 
 # ============================ BOOTSTRAP ============================
 
