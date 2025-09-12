@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% block title %}Nova Compra{% endblock %}
+{% block content %}
+<h2>Comprador → Novo Pedido</h2>
+
+<form method="post" action="{{ url_for('compras_novo') }}" id="form-compra" class="card" style="padding:12px;">
+  <input type="hidden" name="action" value="create">
+
+  <div style="display:flex; gap:16px; flex-wrap:wrap;">
+    <div style="min-width:220px;">
+      <label><strong>Nº da OS</strong></label><br>
+      <input name="os_number" id="os_number" required placeholder="ex.: 12345">
+    </div>
+
+    <div>
+      <label><strong>Tipo</strong></label><br>
+      <select name="tipo" id="tipo">
+        <option value="lente">lente</option>
+        <option value="bloco">bloco</option>
+      </select>
+    </div>
+
+    <div>
+      <label><strong>Quantidade</strong></label><br>
+      <select name="pair_option" id="pair_option">
+        <option value="meio">meio par (1 unidade)</option>
+        <option value="par">par (2 unidades)</option>
+      </select>
+    </div>
+  </div>
+
+  <hr style="margin:12px 0;">
+
+  <div class="grid" style="grid-template-columns:repeat(2,minmax(260px,1fr)); gap:16px;">
+    <div class="card" style="padding:12px;">
+      <h3 style="margin:0 0 8px;">Item A</h3>
+
+      <label><strong>Produto</strong></label>
+      <select name="product_id" id="product_id" required>
+        <option value="">— selecione —</option>
+        {% for p in products %}
+          <option value="{{ p.id }}" data-kind="{{ p.kind|e }}">
+            {% if p.code %}[{{ p.code }}] {% endif %}{{ p.name }} ({{ p.kind }})
+          </option>
+        {% endfor %}
+      </select>
+      <div class="muted" style="font-size:.9em; margin-top:4px;">
+        Você também pode informar um código abaixo. Se existir, ele será priorizado.
+      </div>
+
+      <div style="margin-top:8px;">
+        <label><strong>Código do produto (opcional)</strong></label><br>
+        <input name="product_code" id="product_code" placeholder="ex.: LA167">
+      </div>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:8px;">
+        <div>
+          <label><strong>Fornecedor (Item A)</strong></label><br>
+          <select name="supplier_main" id="supplier_main" required>
+            <option value="">— selecione —</option>
+            {% for c in combos %}
+              <option value="{{ c.supplier_id }}"
+                      data-product="{{ c.product_id }}"
+                      data-max="{{ '%.2f'|format(c.max_price) }}">
+                {{ c.supplier_name }}
+              </option>
+            {% endfor %}
+          </select>
+          <div class="muted" id="max_main" style="font-size:.9em;"></div>
+        </div>
+
+        <div>
+          <label><strong>Preço (Item A)</strong></label><br>
+          <input name="price_main" id="price_main" type="number" step="0.01" min="0.01" required>
+        </div>
+      </div>
+
+      <div id="campos_lente_a" style="margin-top:8px;">
+        <label><strong>Dioptria (lente)</strong></label>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div>
+            <label>Esférico</label><br>
+            <input name="d1_sphere" id="d1_sphere" type="number" step="0.25" placeholder="+/- 0,25…">
+          </div>
+          <div>
+            <label>Cilíndrico</label><br>
+            <input name="d1_cylinder" id="d1_cylinder" type="number" step="0.25" placeholder="-0,25…-15,00">
+          </div>
+        </div>
+        <div class="muted" style="font-size:.9em; margin-top:4px;">
+          Dica: cilindros entre -2,25 e -4,00 podem trocar para <em>CIL. EST.</em>; abaixo de -4,00 para <em>CIL. SUPER EST.</em> automaticamente.
+        </div>
+      </div>
+
+      <div id="campos_bloco_a" style="margin-top:8px; display:none;">
+        <label><strong>Parâmetros (bloco)</strong></label>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div>
+            <label>Base</label><br>
+            <select name="d1_base" id="d1_base">
+              <option value="0.5">0,5</option><option value="1">1</option>
+              <option value="2">2</option><option value="4">4</option>
+              <option value="6">6</option><option value="8">8</option>
+              <option value="10">10</option>
+            </select>
+          </div>
+          <div>
+            <label>Adição</label><br>
+            <input name="d1_addition" id="d1_addition" type="number" step="0.25" min="1" max="4" placeholder="+1,00…+4,00">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-item-b" style="padding:12px; display:none;">
+      <h3 style="margin:0 0 8px;">Item B</h3>
+
+      <div style="margin:4px 0 8px;">
+        <label><input type="checkbox" name="supplier_distinto" id="supplier_distinto"> Fornecedor distinto do A</label>
+      </div>
+
+      <div id="grupo_forn_b" style="display:none;">
+        <label><strong>Fornecedor (Item B)</strong></label><br>
+        <select name="supplier_second" id="supplier_second">
+          <option value="">— selecione —</option>
+          {% for c in combos %}
+            <option value="{{ c.supplier_id }}"
+                    data-product="{{ c.product_id }}"
+                    data-max="{{ '%.2f'|format(c.max_price) }}">
+              {{ c.supplier_name }}
+            </option>
+          {% endfor %}
+        </select>
+        <div class="muted" id="max_second" style="font-size:.9em;"></div>
+      </div>
+
+      <div style="margin-top:8px;">
+        <label><strong>Preço (Item B)</strong></label><br>
+        <input name="price_second" id="price_second" type="number" step="0.01" min="0.01">
+      </div>
+
+      <div id="campos_lente_b" style="margin-top:8px;">
+        <label><strong>Dioptria (lente)</strong></label>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div>
+            <label>Esférico</label><br>
+            <input name="d2_sphere" id="d2_sphere" type="number" step="0.25" placeholder="+/- 0,25…">
+          </div>
+          <div>
+            <label>Cilíndrico</label><br>
+            <input name="d2_cylinder" id="d2_cylinder" type="number" step="0.25" placeholder="-0,25…-15,00">
+          </div>
+        </div>
+      </div>
+
+      <div id="campos_bloco_b" style="margin-top:8px; display:none;">
+        <label><strong>Parâmetros (bloco)</strong></label>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div>
+            <label>Base</label><br>
+            <select name="d2_base" id="d2_base">
+              <option value="0.5">0,5</option><option value="1">1</option>
+              <option value="2">2</option><option value="4">4</option>
+              <option value="6">6</option><option value="8">8</option>
+              <option value="10">10</option>
+            </select>
+          </div>
+          <div>
+            <label>Adição</label><br>
+            <input name="d2_addition" id="d2_addition" type="number" step="0.25" min="1" max="4" placeholder="+1,00…+4,00">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:16px;">
+    <button class="btn primary">Criar pedido</button>
+  </div>
+</form>
+
+<script>
+(function(){
+  const tipoEl = document.getElementById('tipo');
+  const pairEl = document.getElementById('pair_option');
+  const prodEl = document.getElementById('product_id');
+  const suppA  = document.getElementById('supplier_main');
+  const suppB  = document.getElementById('supplier_second');
+  const priceA = document.getElementById('price_main');
+  const priceB = document.getElementById('price_second');
+  const maxMain = document.getElementById('max_main');
+  const maxSecond = document.getElementById('max_second');
+  const cardB = document.getElementById('card-item-b');
+  const grupoFornB = document.getElementById('grupo_forn_b');
+  const chkFornDistinto = document.getElementById('supplier_distinto');
+
+  function toggleTipo() {
+    const tipo = tipoEl.value;
+    document.getElementById('campos_lente_a').style.display = (tipo === 'lente') ? '' : 'none';
+    document.getElementById('campos_bloco_a').style.display = (tipo === 'bloco') ? '' : 'none';
+    document.getElementById('campos_lente_b').style.display = (tipo === 'lente') ? '' : 'none';
+    document.getElementById('campos_bloco_b').style.display = (tipo === 'bloco') ? '' : 'none';
+  }
+
+  function togglePar() {
+    const par = pairEl.value === 'par';
+    cardB.style.display = par ? '' : 'none';
+  }
+
+  function toggleFornB() {
+    const distinto = chkFornDistinto.checked;
+    grupoFornB.style.display = distinto ? '' : 'none';
+    if (!distinto) {
+      priceB.value = priceA.value;
+      syncSupplierOptions(); // ainda filtra, mas mantém ok
+    }
+  }
+
+  function syncSupplierOptions() {
+    const pid = prodEl.value;
+    // filtra fornecedores que têm regra para o produto selecionado
+    [suppA, suppB].forEach(sel => {
+      Array.from(sel.options).forEach(opt => {
+        if (!opt.value) return;
+        const ok = (opt.getAttribute('data-product') === pid);
+        opt.hidden = !ok;
+      });
+      // selecionar a primeira opção válida caso nada selecionado
+      if (!Array.from(sel.options).some(o => o.selected && !o.hidden)) {
+        const cand = Array.from(sel.options).find(o => !o.hidden && o.value);
+        if (cand) cand.selected = true;
+      }
+    });
+    updateMaxHints();
+  }
+
+  function updateMaxHints() {
+    const pid = prodEl.value;
+    const aOpt = suppA.options[suppA.selectedIndex];
+    const bOpt = suppB.options[suppB.selectedIndex];
+    const aMax = aOpt ? aOpt.getAttribute('data-max') : null;
+    const bMax = bOpt ? bOpt.getAttribute('data-max') : null;
+    maxMain.textContent = aMax ? ('Preço máximo (A): R$ ' + aMax) : '';
+    maxSecond.textContent = (chkFornDistinto.checked && bMax) ? ('Preço máximo (B): R$ ' + bMax) : '';
+  }
+
+  tipoEl.addEventListener('change', toggleTipo);
+  pairEl.addEventListener('change', function(){ togglePar(); toggleFornB(); });
+  chkFornDistinto.addEventListener('change', toggleFornB);
+  prodEl.addEventListener('change', function(){ syncSupplierOptions(); });
+
+  suppA.addEventListener('change', updateMaxHints);
+  suppB.addEventListener('change', updateMaxHints);
+
+  // init
+  toggleTipo(); togglePar(); toggleFornB(); syncSupplierOptions(); updateMaxHints();
+})();
+</script>
+
+{% endblock %}
