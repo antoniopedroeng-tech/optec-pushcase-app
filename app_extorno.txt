@@ -294,6 +294,38 @@ def audit(action, details=""):
     db_exec("INSERT INTO audit_log (user_id, action, details, created_at) VALUES (:uid,:a,:d,:c)",
             uid=(u["id"] if u else None), a=action, d=details, c=datetime.utcnow())
 
+
+def supplier_credit_balance(supplier_id: int) -> float:
+    row = db_one("SELECT COALESCE(SUM(remaining),0) AS bal FROM supplier_credits WHERE supplier_id=:s", s=supplier_id)
+    return float(row["bal"] or 0.0)
+
+def consume_supplier_credit(conn, supplier_id: int, order_id: int, desired_amount: float) -> float:
+    """
+    Consome créditos do fornecedor no modelo FIFO. Retorna quanto foi de fato abatido.
+    """
+    if desired_amount <= 0:
+        return 0.0
+    rows = conn.execute(text("""
+        SELECT id, remaining FROM supplier_credits
+        WHERE supplier_id=:s AND remaining > 0
+        ORDER BY created_at ASC, id ASC
+    """), dict(s=supplier_id)).mappings().all()
+    to_consume = desired_amount
+    consumed = 0.0
+    for r in rows:
+        if to_consume <= 0:
+            break
+        take = float(min(r["remaining"], to_consume))
+        if take > 0:
+            conn.execute(text("UPDATE supplier_credits SET remaining=remaining-:v WHERE id=:id"), dict(v=take, id=r["id"]))
+            conn.execute(text("""
+                INSERT INTO supplier_credit_uses (credit_id, order_id, amount, used_at)
+                VALUES (:cid, :oid, :amt, :ts)
+            """), dict(cid=r["id"], oid=order_id, amt=take, ts=datetime.utcnow()))
+            consumed += take
+            to_consume -= take
+    return consumed
+
 # ============================ AUTH/CTX ============================
 
 def current_user():
@@ -592,37 +624,6 @@ def admin_suppliers_create():
         flash("Nome inválido.", "error"); return redirect(url_for("admin_suppliers"))
     try:
         db_exec("INSERT INTO suppliers (name, active, billing) VALUES (:n,1,:b)", n=name, b=billing)
-
-def supplier_credit_balance(supplier_id: int) -> float:
-    row = db_one("SELECT COALESCE(SUM(remaining),0) AS bal FROM supplier_credits WHERE supplier_id=:s", s=supplier_id)
-    return float(row["bal"] or 0.0)
-
-def consume_supplier_credit(conn, supplier_id: int, order_id: int, desired_amount: float) -> float:
-    """
-    Consome créditos do fornecedor no modelo FIFO. Retorna quanto foi de fato abatido.
-    """
-    if desired_amount <= 0:
-        return 0.0
-    rows = conn.execute(text("""
-        SELECT id, remaining FROM supplier_credits
-        WHERE supplier_id=:s AND remaining > 0
-        ORDER BY created_at ASC, id ASC
-    """), dict(s=supplier_id)).mappings().all()
-    to_consume = desired_amount
-    consumed = 0.0
-    for r in rows:
-        if to_consume <= 0:
-            break
-        take = float(min(r["remaining"], to_consume))
-        if take > 0:
-            conn.execute(text("UPDATE supplier_credits SET remaining=remaining-:v WHERE id=:id"), dict(v=take, id=r["id"]))
-            conn.execute(text("""
-                INSERT INTO supplier_credit_uses (credit_id, order_id, amount, used_at)
-                VALUES (:cid, :oid, :amt, :ts)
-            """), dict(cid=r["id"], oid=order_id, amt=take, ts=datetime.utcnow()))
-            consumed += take
-            to_consume -= take
-    return consumed
         audit("supplier_create", f"{name} billing={billing}"); flash("Fornecedor criado.", "success")
     except Exception:
         flash("Fornecedor já existe.", "error")
@@ -1279,6 +1280,7 @@ def pagamentos_lista():
     """)
     return render_template("pagamentos_lista.html", orders=orders)
 
+
 @app.route("/pagamentos/<int:oid>", methods=["GET","POST"])
 def pagamentos_detalhe(oid):
     ret = require_role("pagador","admin")
@@ -1324,18 +1326,6 @@ def pagamentos_detalhe(oid):
         return redirect(url_for("pagamentos_lista"))
 
     return render_template("pagamentos_detalhe.html", order=order, items=items, credit_avail=credit_avail, suggested_due=suggested_due)
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
-                VALUES (:o,:p,:m,:r,:d,:a)
-            """), dict(o=oid, p=session["user_id"], m=method, r=reference, d=datetime.utcnow(), a=amount))
-            conn.execute(text("UPDATE purchase_orders SET status='PAGO', updated_at=:u WHERE id=:id"),
-                         dict(u=datetime.utcnow(), id=oid))
-        audit("order_paid", f"id={oid} amount={amount}")
-        flash("Pagamento registrado e pedido baixado como PAGO.", "success"); return redirect(url_for("pagamentos_lista"))
-    return render_template("pagamentos_detalhe.html", order=order, items=items)
-
-# -------- Relatórios --------
 
 @app.route("/relatorios")
 def relatorios_index():
