@@ -203,7 +203,15 @@ def init_db():
       amount DOUBLE PRECISION NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS audit_log (
+    
+    CREATE TABLE IF NOT EXISTS supplier_credits (
+      id SERIAL PRIMARY KEY,
+      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+      item_id INTEGER NOT NULL UNIQUE REFERENCES purchase_items(id) ON DELETE CASCADE,
+      amount DOUBLE PRECISION NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    );
+CREATE TABLE IF NOT EXISTS audit_log (
       id SERIAL PRIMARY KEY,
       user_id INTEGER REFERENCES users(id),
       action TEXT NOT NULL,
@@ -1218,14 +1226,21 @@ def compras_detalhe(oid):
 def pagamentos_lista():
     ret = require_role("pagador","admin")
     if ret: return ret
-    orders = db_all("""
-        SELECT o.*, u.username as buyer_name, s.name as supplier_name
-        FROM purchase_orders o
-        JOIN users u ON u.id = o.buyer_id
-        JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.status='PENDENTE_PAGAMENTO'
-        ORDER BY o.created_at ASC
-    """)
+    orders = db_all("""SELECT 
+        o.*, 
+        u.username AS buyer_name, 
+        s.name AS supplier_name,
+        COALESCE(cr.total_credit, 0) AS supplier_credit
+    FROM purchase_orders o
+    JOIN users u      ON u.id = o.buyer_id
+    JOIN suppliers s  ON s.id = o.supplier_id
+    LEFT JOIN (
+        SELECT supplier_id, SUM(amount) AS total_credit
+        FROM supplier_credits
+        GROUP BY supplier_id
+    ) cr ON cr.supplier_id = o.supplier_id
+    WHERE o.status = 'PENDENTE_PAGAMENTO'
+    ORDER BY o.created_at ASC""")
     return render_template("pagamentos_lista.html", orders=orders)
 
 @app.route("/pagamentos/<int:oid>", methods=["GET","POST"])
@@ -1395,3 +1410,74 @@ except Exception as e:
 if __name__ == "__main__":
     # Para rodar local, defina DATABASE_URL (ex.: sqlite:///local.db) antes de executar
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+# === Extornos routes (added) ===
+
+@app.route("/extornos", methods=["GET"])
+def extornos_index():
+    ret = require_role("pagador", "admin")
+    if ret:
+        return ret
+
+    day = (request.args.get("date") or date.today().isoformat())
+
+    items = db_all("""
+        SELECT
+          i.id AS item_id,
+          o.id AS order_id,
+          s.id AS supplier_id,
+          s.name AS supplier_name,
+          p.name AS product_name,
+          p.code AS product_code,
+          i.quantity, 
+          i.unit_price,
+          i.sphere, i.cylinder, i.base, i.addition,
+          EXISTS(SELECT 1 FROM supplier_credits c WHERE c.item_id = i.id) AS already
+        FROM payments pay
+        JOIN purchase_orders o ON o.id = pay.order_id
+        JOIN suppliers s       ON s.id = o.supplier_id
+        JOIN purchase_items i  ON i.order_id = o.id
+        JOIN products p        ON p.id = i.product_id
+        WHERE DATE(pay.paid_at) = :day
+        ORDER BY s.name, p.name, i.id
+    """, day=day)
+
+    def fmt_dioptria(r):
+        if r.get("sphere") is not None or r.get("cylinder") is not None:
+            esf = f"{r['sphere']:+.2f}" if r.get("sphere") is not None else "-"
+            cil = f"{r['cylinder']:+.2f}" if r.get("cylinder") is not None else "-"
+            return f"Esf {esf} / Cil {cil}"
+        else:
+            b   = f"{r['base']:.2f}" if r.get("base") is not None else "-"
+            add = f"+{r['addition']:.2f}" if r.get("addition") is not None else "-"
+            return f"Base {b} / Adição {add}"
+
+    return render_template("extornos.html", items=items, day=day, fmt_dioptria=fmt_dioptria)
+
+
+@app.route("/extornos/<int:item_id>/criar", methods=["POST"])
+def extornos_criar(item_id):
+    ret = require_role("pagador", "admin")
+    if ret:
+        return ret
+
+    day = (request.args.get("date") or date.today().isoformat())
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO supplier_credits (supplier_id, item_id, amount, created_at)
+            SELECT 
+              o.supplier_id, 
+              i.id,
+              COALESCE(i.quantity,0) * COALESCE(i.unit_price,0.0),
+              :now
+            FROM purchase_items i
+            JOIN purchase_orders o ON o.id = i.order_id
+            WHERE i.id = :item_id
+            ON CONFLICT (item_id) DO NOTHING
+        """), dict(now=datetime.utcnow(), item_id=item_id))
+
+    audit("extorno_create", f"item_id={item_id}")
+    flash("Extorno registrado como crédito para o fornecedor.", "success")
+    return redirect(url_for("extornos_index", date=day))
+
