@@ -5,6 +5,7 @@
   <tr>
     <th>ID</th>
     <th>Fornecedor</th>
+    <th>Comprador</th>
     <th>Status</th>
     <th>Total (R$)</th>
     <th>Criado</th>
@@ -16,6 +17,7 @@
   <tr>
     <td>#{{ o.id }}</td>
     <td>{{ o.supplier_name }}</td>
+    <td>{{ o.buyer_name }}</td>
     <td>
       {% if status_txt == 'FATURADO' %}
         <span style="background:#fff4d6;border:1px solid #e6c200;color:#7a5a00;padding:2px 6px;border-radius:6px;">FATURADO</span>

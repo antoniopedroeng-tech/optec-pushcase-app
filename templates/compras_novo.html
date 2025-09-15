@@ -316,6 +316,7 @@
   suppMain.addEventListener('change', updateMaxHints);
   suppSecond && suppSecond.addEventListener('change', updateMaxHints);
   tipoSel.addEventListener('change', () => {
+    normalizeAdditionInputs();
     refreshProductsByTipo();
     syncTipo();
     syncPairFields();
@@ -548,8 +549,47 @@
     hidden.value = JSON.stringify(pendingItems);
   });
 
+  
+  // === Adição 0 (BVS) para BLOCO ===
+  function isBloco() {
+    return (tipoSel && tipoSel.value === 'bloco');
+  }
+  function normalizeAdditionInputSingle(el) {
+    if (!el) return;
+    el.setAttribute('step', '0.25');
+    if (isBloco()) {
+      el.setAttribute('min', '0');
+      el.setAttribute('placeholder', '0 = BVS (bloco)');
+      // Se usuário colocou um valor intermediário (0 < x < 1), normaliza para 1.00
+      const v = parseFloat((el.value || '').replace(',', '.'));
+      if (!isNaN(v) && v > 0 && v < 1) el.value = '1';
+      // Se estiver vazio, sugerimos 0 visualmente (sem forçar)
+      // (Não auto-preenche para não surpreender.)
+    } else {
+      el.setAttribute('min', '1');
+      el.setAttribute('placeholder', '+1,00 a +4,00');
+      if (el.value === '0') el.value = '1';
+      const v = parseFloat((el.value || '').replace(',', '.'));
+      if (!isNaN(v) && v > 0 && v < 1) el.value = '1';
+    }
+  }
+  function normalizeAdditionInputs() {
+    normalizeAdditionInputSingle(document.querySelector('[name="d1_addition"]'));
+    normalizeAdditionInputSingle(document.querySelector('[name="d2_addition"]'));
+  }
+  function bindAdditionGuards() {
+    ['input','change','blur'].forEach(evt => {
+      const a1 = document.querySelector('[name="d1_addition"]');
+      const a2 = document.querySelector('[name="d2_addition"]');
+      if (a1) a1.addEventListener(evt, () => normalizeAdditionInputSingle(a1));
+      if (a2) a2.addEventListener(evt, () => normalizeAdditionInputSingle(a2));
+    });
+  }
+
   // Inicializações
   function init() {
+    bindAdditionGuards();
+    normalizeAdditionInputs();
     refreshProductsByTipo();
     syncTipo();
     syncPairFields();

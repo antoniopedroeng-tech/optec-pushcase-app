@@ -26,6 +26,7 @@
     <td>#{{ o.id }}</td>
     <td>{{ o.supplier_name }}</td>
     <td>{{ o.buyer_name }}</td>
+    {% if role == 'admin' %}<td>{{ o.payer_name or '—' }}</td>{% endif %}
     <td>{{ '%.2f'|format(o.total) }}</td>
     <td>
       {% if o.supplier_credit and o.supplier_credit > 0 %}
