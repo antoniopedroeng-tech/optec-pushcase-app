@@ -333,6 +333,7 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
             p.in_stock AS in_stock,
             i.sphere, i.cylinder, i.base, i.addition,
             i.quantity, i.unit_price,
+            i.os_number AS os,
             pay.method AS metodo,
             DATE(pay.paid_at) AS data
         FROM payments pay
@@ -354,7 +355,7 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Pagamentos do Dia"
-    ws.append(["Fornecedor", "Produto", "Estoque", "Dioptria", "Data", "Método", "Valor"])
+    ws.append(["Fornecedor", "OS", "Produto", "Estoque", "Dioptria", "Data", "Método", "Valor"])
 
     def fmt_dioptria(r):
         if r["sphere"] is not None or r["cylinder"] is not None:
@@ -372,6 +373,7 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
         grand_total += subtotal
         ws.append([
             r["fornecedor"],
+            r["os"] or "",
             r["produto"],
             "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
             fmt_dioptria(r),
@@ -387,7 +389,7 @@ def build_excel_bytes_for_day(day_str: str) -> bytes:
     ws.cell(row=ws.max_row, column=7).font = Font(bold=True)
 
     from openpyxl.utils import get_column_letter
-    for i, w in enumerate([18, 28, 12, 26, 12, 14, 14], 1):
+    for i, w in enumerate([18, 28, 12, 26, 12, 14, 14, 14], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     bio = io.BytesIO()
@@ -403,6 +405,7 @@ def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
             p.in_stock AS in_stock,
             i.sphere, i.cylinder, i.base, i.addition,
             i.quantity, i.unit_price,
+            i.os_number AS os,
             pay.method AS metodo,
             DATE(pay.paid_at) AS data
         FROM payments pay
@@ -424,7 +427,7 @@ def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Pagamentos por Período"
-    ws.append(["Fornecedor", "Produto", "Estoque", "Dioptria", "Data", "Método", "Valor"])
+    ws.append(["Fornecedor", "OS", "Produto", "Estoque", "Dioptria", "Data", "Método", "Valor"])
 
     def fmt_dioptria(r):
         if r["sphere"] is not None or r["cylinder"] is not None:
@@ -442,6 +445,7 @@ def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
         grand_total += subtotal
         ws.append([
             r["fornecedor"],
+            r["os"] or "",
             r["produto"],
             "Sim" if int(r["in_stock"] or 0) == 1 else "Não",
             fmt_dioptria(r),
@@ -456,7 +460,7 @@ def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
     ws.cell(row=ws.max_row, column=7).font = Font(bold=True)
 
     from openpyxl.utils import get_column_letter
-    for i, w in enumerate([18, 28, 12, 26, 12, 14, 14], 1):
+    for i, w in enumerate([18, 28, 12, 26, 12, 14, 14, 14], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     bio = io.BytesIO()
