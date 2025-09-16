@@ -1054,8 +1054,11 @@ def compras_novo():
             allowed_bases = {0.5,1.0,2.0,4.0,6.0,8.0,10.0}
             if base is None or base not in allowed_bases:
                 return None, "Base inválida (0,5; 1; 2; 4; 6; 8; 10)."
-            if addition is None or addition < 1.0 or addition > 4.0 or not _step_ok(addition):
-                return None, "Adição inválida (+1,00 até +4,00 em 0,25)."
+            # Permitir 0 para BVS (bloco visão simples). Se None, tratar como 0.
+            addition = 0.0 if addition is None else addition
+            # Válido se: 0 (BVS) OU entre 1 e 4 (inclusive), sempre em passos de 0,25
+            if addition < 0 or not _step_ok(addition) or (addition != 0 and not (1.0 <= addition <= 4.0)):
+                return None, "Adição inválida: use 0 para BVS (bloco) ou +1,00 a +4,00 em passos de 0,25."
             return {"sphere": None, "cylinder": None, "base": base, "addition": addition}, None
 
         items_to_add = []
