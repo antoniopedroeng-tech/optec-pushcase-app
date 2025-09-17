@@ -79,14 +79,6 @@
       <label class="label">Adição</label>
       <input id="adicao" class="field" type="number" step="0.25" min="1.00" max="4.00" placeholder="+1.00 a +4.00">
     </div>
-
-    <div style="margin-top:16px;">
-      <label class="label">Produto final</label>
-      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
-    </div>
-
-    <div class="row" style="margin-top:10px; align-items:center;">
-      <div class="total">Total: R$ <span id="total_val">0,00</span></div>
       <div style="flex:0 0 auto">
         <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
       </div>
@@ -109,7 +101,17 @@
       <label class="label">Serviços adicionais</label>
       <select id="sel_serv_add" class="field" multiple size="5" disabled></select>
       <div class="muted" style="margin-top:6px;">(Selecione um ou mais)</div>
+    
+    <hr style="margin:14px 0;">
+
+
+    <div style="margin-top:16px;">
+      <label class="label">Produto final</label>
+      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
     </div>
+
+    <div class="row" style="margin-top:10px; align-items:center;">
+      <div class="total">Total: R$ <span id="total_val">0,00</span></div></div>
   </div>
 
 </div>
