@@ -964,7 +964,7 @@ def admin_import():
         else:
             try:
                 from openpyxl import load_workbook
-                wb = load_workbook(file, data_only=True)
+                wb = load_workbook(file, data_only=True, read_only=True)
                 with engine.begin() as conn:
                     # Suppliers
                     if "Suppliers" in wb.sheetnames:
@@ -1241,7 +1241,7 @@ def admin_import_orcamento():
             return [c.strip() for c in str(v).replace(",", ";").split(";") if c and c.strip()]
 
         # ===== Lê planilha =====
-        wb = load_workbook(file, data_only=True)
+        wb = load_workbook(file, data_only=True, read_only=True)
         sheet_names = [str(n).strip() for n in wb.sheetnames]
         ws_prod = wb["PRODUTOS"] if "PRODUTOS" in sheet_names else wb[wb.sheetnames[0]]
         ws_serv = wb["SERVIÇOS"] if "SERVIÇOS" in sheet_names else (wb["SERVICOS"] if "SERVICOS" in sheet_names else None)
@@ -1312,7 +1312,12 @@ def admin_import_orcamento():
             c_serv_disp = pcol("servicos disponiveis","serviços disponiveis","serviços disponiveis","servicos disponiveis")
             c_acresc = pcol("acrescimos","acréscimos","acréscimo")
 
-            for row in ws_prod.iter_rows(min_row=2):
+            limit = int(os.environ.get('ORC_IMPORT_ROW_LIMIT', '0') or 0)
+count = 0
+for row in ws_prod.iter_rows(min_row=2):
+                count += 1
+                if limit and count > limit:
+                    break
                 report["rows"] += 1
                 name = str(row[c_nome].value).strip() if c_nome is not None and row[c_nome].value is not None else ""
                 code = norm(row[c_cod].value) if c_cod is not None else ""
@@ -1455,7 +1460,7 @@ def admin_import_orcamento():
         if v is None: return []
         return [c.strip() for c in str(v).replace(",", ";").split(";") if c and c.strip()]
 
-    wb = load_workbook(file, data_only=True)
+    wb = load_workbook(file, data_only=True, read_only=True)
     sheet_names = [str(n).strip() for n in wb.sheetnames]
     ws_prod = wb["PRODUTOS"] if "PRODUTOS" in sheet_names else wb[wb.sheetnames[0]]
     ws_serv = wb["SERVIÇOS"] if "SERVIÇOS" in sheet_names else (wb["SERVICOS"] if "SERVICOS" in sheet_names else None)
@@ -1518,7 +1523,12 @@ def admin_import_orcamento():
         c_serv_disp = pcol("servicos disponiveis","serviços disponiveis","serviços disponiveis","servicos disponiveis")
         c_acresc = pcol("acrescimos","acréscimos","acréscimo")
 
-        for row in ws_prod.iter_rows(min_row=2):
+        limit = int(os.environ.get('ORC_IMPORT_ROW_LIMIT', '0') or 0)
+count = 0
+for row in ws_prod.iter_rows(min_row=2):
+                count += 1
+                if limit and count > limit:
+                    break
             name = str(row[c_nome].value).strip() if c_nome is not None and row[c_nome].value is not None else ""
             code = norm(row[c_cod].value) if c_cod is not None else ""
             if not name or not code:  # ignora linhas em branco
