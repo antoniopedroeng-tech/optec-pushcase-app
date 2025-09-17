@@ -221,25 +221,31 @@ CREATE TABLE IF NOT EXISTS audit_log (
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
-        -- Atualiza CHECK de users.role para incluir 'cliente'
+        try:
+            conn.execute(text("""
+        DO $$
+        DECLARE r record;
         BEGIN
-          DO $$
-          DECLARE r record;
+          FOR r IN
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname='users' AND c.contype='c'
+              AND pg_get_constraintdef(c.oid) ILIKE '%role IN (%'
+          LOOP
+            EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', r.conname);
+          END LOOP;
           BEGIN
-            FOR r IN
-              SELECT c.conname
-              FROM pg_constraint c
-              JOIN pg_class t ON c.conrelid = t.oid
-              WHERE t.relname='users' AND c.contype='c'
-                AND pg_get_constraintdef(c.oid) ILIKE '%role IN (%'
-            LOOP
-              EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', r.conname);
-            END LOOP;
-          END $$;
-          ALTER TABLE users
-          ADD CONSTRAINT users_role_check
-          CHECK (role IN ('admin','comprador','pagador','cliente'));
-        EXCEPTION WHEN others THEN NULL; END;
+            ALTER TABLE users
+            ADD CONSTRAINT users_role_check
+            CHECK (role IN ('admin','comprador','pagador','cliente'));
+          EXCEPTION WHEN duplicate_object THEN
+          END;
+        END $$;
+        """))
+        except Exception:
+            pass
+
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
