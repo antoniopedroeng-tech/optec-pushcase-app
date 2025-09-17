@@ -512,16 +512,6 @@ def build_excel_bytes_for_period(start_str: str, end_str: str) -> bytes:
 
 # ============================ ROTAS ============================
 
-# --- Tela Orçamento ----------------------------------------------------------
-@app.route("/orcamento", methods=["GET"])
-def orcamento():
-    # permite admin, comprador, pagador e cliente
-    ret = require_role("admin", "comprador", "pagador", "cliente")
-    if ret:
-        return ret
-    return render_template("orcamento.html")
-
-
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
