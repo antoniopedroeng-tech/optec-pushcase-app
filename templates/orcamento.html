@@ -62,13 +62,13 @@
           <tr>
             <th>OD</th>
             <td><input id="od_esf" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="od_cil" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="od_cil" class="field" type="text" step="0.25" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
             <td><input id="od_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
           </tr>
           <tr>
             <th>OE</th>
             <td><input id="oe_esf" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="oe_cil" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="oe_cil" class="field" type="text" step="0.25" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
             <td><input id="oe_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
           </tr>
         </tbody>
@@ -134,6 +134,28 @@
   const adicao = document.getElementById('adicao');
 
   const sel_produto = document.getElementById('sel_produto');
+
+// ---- Helpers de normalização de números pt-BR ----
+function toNumberPt(v){ if(v==null) return null; v=String(v).trim().replace(',','.'); const n=parseFloat(v); return isNaN(n)?null:n; }
+function formatPt(n){ if(n==null||isNaN(n)) return ''; return String(n).replace('.',','); }
+function normalizeCylinder(el){
+  let n = toNumberPt(el.value);
+  if(n==null){ el.value=''; return; }
+  if(n>0) n = -n;              // força negativo (exceto 0)
+  if(n < -12) n = -12;
+  if(n > 0) n = 0;
+  n = Math.round(n*4)/4;       // passo 0.25
+  if(Object.is(n,-0)) n=0;
+  el.value = String(n).replace('.',',');
+}
+function clampEixo(el){
+  let v = parseInt((el.value||'0'),10);
+  if(isNaN(v)) v=0;
+  if(v<0) v=0;
+  if(v>359) v=359;
+  el.value = String(v);
+}
+
   const list_serv_mand = document.getElementById('list_serv_mand');
   const sel_serv_add = document.getElementById('sel_serv_add');
 
@@ -155,6 +177,10 @@
   }
   visao.addEventListener('change', enableRecipeFields);
 
+;[od_cil, oe_cil].forEach(el=>{ el.addEventListener('blur', ()=>normalizeCylinder(el)); el.addEventListener('change', ()=>normalizeCylinder(el)); });
+;[od_eixo, oe_eixo].forEach(el=>{ el.addEventListener('blur', ()=>clampEixo(el)); el.addEventListener('change', ()=>clampEixo(el)); });
+
+
   [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
     el.addEventListener('input', tryFetchOptions);
     el.addEventListener('change', tryFetchOptions);
@@ -168,6 +194,7 @@
   }
 
   async function tryFetchOptions() {
+  normalizeCylinder(od_cil); normalizeCylinder(oe_cil); clampEixo(od_eixo); clampEixo(oe_eixo);
     if (!visao.value) return;
     if (!recipeIsFilled()) {
       sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
@@ -322,49 +349,3 @@
 </script>
 
 {% endblock %}
-
-<script>
-function toNumberPt(v) {
-  if (v === null || v === undefined) return null;
-  if (typeof v !== "string") v = String(v);
-  v = v.replace(/\s+/g, "").replace(",", ".");
-  const n = parseFloat(v);
-  return isNaN(n) ? null : n;
-}
-function formatPt(n, decimals=2) {
-  if (n === null || n === undefined || isNaN(n)) return "";
-  return Number(n).toFixed(decimals).replace(".", ",");
-}
-function normalizeCylinderValue(raw) {
-  let n = toNumberPt(raw);
-  if (n === null) return "";
-  if (n > 0) n = -n;       // força negativo (exceto zero)
-  if (n < -12) n = -12;   // mínimo
-  if (n > 0) n = 0;       // máximo
-  n = Math.round(n * 4) / 4; // passo 0.25
-  return n === 0 ? "0" : formatPt(n);
-}
-function bindCylinderInput(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener("blur", () => { el.value = normalizeCylinderValue(el.value); });
-  el.addEventListener("change", () => { el.value = normalizeCylinderValue(el.value); });
-}
-function clampEixoInput(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener("change", () => {
-    let n = parseInt(el.value || "0", 10);
-    if (isNaN(n)) n = 0;
-    if (n < 0) n = 0;
-    if (n > 359) n = 359;
-    el.value = String(n);
-  });
-}
-document.addEventListener("DOMContentLoaded", () => {
-  bindCylinderInput("cil_od");
-  bindCylinderInput("cil_oe");
-  clampEixoInput("eixo_od");
-  clampEixoInput("eixo_oe");
-});
-</script>

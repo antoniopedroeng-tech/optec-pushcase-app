@@ -588,8 +588,11 @@ def api_orcamento_options():
     visao = (data.get("visao") or "").strip()
     flags = data.get("flags") or {}
     ar   = bool(flags.get("ar"))
+    ar_i = 1 if ar else 0
     foto = bool(flags.get("foto"))
+    foto_i = 1 if foto else 0
     azul = bool(flags.get("azul"))
+    azul_i = 1 if azul else 0
 
     od = data.get("od") or {}; oe = data.get("oe") or {}
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
@@ -602,12 +605,15 @@ def api_orcamento_options():
     """)
 
     def inrng(v, a, b):
-        lo = min(Decimal(a), Decimal(b)); hi = max(Decimal(a), Decimal(b))
+        a = Decimal(a); b = Decimal(b)
+        if a == 0 and b == 0:
+            return True
+        lo = min(a,b); hi = max(a,b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
     products = []
     with engine.begin() as conn:
-        for r in conn.execute(q, {"visao":visao,"ar":ar,"foto":foto,"azul":azul}).mappings():
+        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
             ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
             ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
             if ok_od and ok_oe:
@@ -1185,11 +1191,11 @@ def admin_import():
 
 
 @app.post("/admin/import_orcamento")
-
 def admin_import_orcamento():
     ret = require_role("admin")
     if ret: return ret
 
+    from flask import redirect, url_for
     try:
         from openpyxl import load_workbook
     except Exception:
@@ -1201,197 +1207,163 @@ def admin_import_orcamento():
         flash("Selecione um arquivo .xlsx", "error")
         return redirect(url_for('admin_import'))
 
-    # ---------- Helpers ----------
+    # helpers
+    import re
     from decimal import Decimal, InvalidOperation
-    import re as _re
+    def _to_dec(v, default=0):
+        if v is None: return Decimal(default)
+        if isinstance(v, (int,float,Decimal)): return Decimal(str(v))
+        s = str(v).strip().replace(",", ".")
+        try: return Decimal(s)
+        except Exception: return Decimal(default)
+    def _b01(v):
+        if v is None: return 0
+        s = str(v).strip().lower()
+        return 1 if s in ("1","sim","s","true","t","x") else 0
+    def _split_codes(s):
+        if not s: return []
+        parts = re.split(r"[.;,]\s*", str(s).strip())
+        return [p.strip() for p in parts if p.strip()]
+    def _parse_acresc(expr):
+        if not expr: return []
+        out = []
+        for it in re.split(r"[.;,]\s*", str(expr).strip()):
+            if not it: continue
+            m = re.match(r"^\s*([A-Za-z0-9]+)\s*(?:\[(.*?)\])?\s*$", it)
+            if not m: 
+                out.append((it, None, None, None, None)); continue
+            code, body = m.group(1), m.group(2)
+            esf_min = esf_max = cil_min = cil_max = None
+            if body:
+                for part in re.split(r"\s*;\s*", body):
+                    pm = re.match(r"^(esf|cil)\s*:\s*([+\-]?\d+(?:[.,]\d+)?)\s*(?:\.\.|a|to|-)\s*([+\-]?\d+(?:[.,]\d+)?)\s*$", part, flags=re.I)
+                    if pm:
+                        kind = pm.group(1).lower()
+                        v1 = _to_dec(pm.group(2)); v2 = _to_dec(pm.group(3))
+                        lo, hi = (v1 if v1<=v2 else v2), (v2 if v2>=v1 else v1)
+                        if kind == "esf": esf_min, esf_max = lo, hi
+                        else: cil_min, cil_max = lo, hi
+            out.append((code, esf_min, esf_max, cil_min, cil_max))
+        return out
 
-    def _dec(x, default=None):
-        if x is None or x == "":
-            return default
-        try:
-            if isinstance(x, (int, float)):
-                return Decimal(str(x))
-            s = str(x).strip().replace(".", "").replace(",", ".")
-            # allow patterns like "-0,25"
-            return Decimal(s)
-        except Exception:
-            if default is None:
-                return None
-            try:
-                return Decimal(str(default))
-            except Exception:
-                return None
+    try:
+        wb = load_workbook(filename=file, data_only=True)
+        ws = wb.worksheets[0]
+    except Exception as e:
+        flash(f"Erro ao ler Excel: {e}", "error")
+        return redirect(url_for('admin_import'))
 
-    def _split_codes(cell):
-        if not cell:
-            return []
-        s = str(cell).strip()
-        # remove spaces and split by ;
-        parts = [p.strip() for p in s.replace(" ", "").split(";") if p.strip()]
-        return parts
+    # header map
+    header_map = {}
+    for j, c in enumerate(ws[1], start=1):
+        header_map[(str(c.value or '').strip().lower())] = j
+    def col(*names):
+        for n in names:
+            n=n.lower()
+            if n in header_map: return header_map[n]
+        return None
 
-    # ---------- Load workbook ----------
-    wb = load_workbook(io.BytesIO(file.read()), data_only=True)
-    # Map sheet names (case-insensitive, sem acentos simples)
-    def _norm(s):
-        return (s or "").strip().lower().replace("ç","c").replace("ã","a").replace("á","a").replace("é","e").replace("ê","e").replace("í","i").replace("ó","o").replace("ú","u").replace("â","a").replace("õ","o")
+    idx_prod   = col("produto","nome")
+    idx_code   = col("código","codigo","cod")
+    idx_valor  = col("valor","preço","preco")
+    idx_visao  = col("tipo de visão","tipo de visao","visao","visão","tv")
+    idx_ar     = col("antirreflexo","anti-reflexo","ar")
+    idx_foto   = col("fotosensível","fotossensivel","foto")
+    idx_azul   = col("filtro azul","azul","blue")
+    idx_esfmin = col("esf mínimo","esf minimo","esf min","esf_min")
+    idx_esfmax = col("esf máximo","esf maximo","esf max","esf_max")
+    idx_cilmin = col("cil mínimo","cil minimo","cil min","cil_min")
+    idx_cilmax = col("cil máximo","cil maximo","cil max","cil_max")
+    idx_servob = col("serviços obrigatórios","servicos obrigatorios","obrigatórios","obrigatorios","n1-14")
+    idx_servop = col("serviços disponíveis","servicos disponiveis","disponíveis","disponiveis","o15")
+    idx_acresc = col("acréscimos","acrescimos","acréscimo","acrescimo")
 
-    snames = { _norm(t): t for t in wb.sheetnames }
-    ws_prod = wb[ snames.get("produtos") or list(wb.sheetnames)[0] ]
+    must = [idx_prod,idx_code,idx_valor,idx_visao,idx_ar,idx_foto,idx_azul,idx_esfmin,idx_esfmax,idx_cilmin,idx_cilmax,idx_servob,idx_servop]
+    if not all(must):
+        flash("Cabeçalhos ausentes na 1ª aba. Confira os nomes.", "error")
+        return redirect(url_for('admin_import'))
 
-    # Serviços podem estar na aba "serviços" e acréscimos na aba "acréscimos".
-    ws_serv = wb[ snames.get("servicos") ] if snames.get("servicos") in wb.sheetnames else None
-    ws_acr  = wb[ snames.get("acrescimos") ] if snames.get("acrescimos") in wb.sheetnames else None
+    prod_ins = prod_upd = 0
+    serv_ob_upserts = serv_opc_upserts = acresc_upserts = 0
+    rows = 0
 
-    # ---------- Read services catalog from both sheets ----------
-    def _headers(ws):
-        H = {}
-        for j, cell in enumerate(ws[1], start=1):
-            H[_norm(str(cell.value))] = j
-        return H
-
-    catalog = {}  # code -> dict(description, price, esf_min,max, cil_min,max)
-    def _ingest_service_sheet(ws):
-        H = _headers(ws)
-        get = lambda key: H.get(key)
-        c_code = get("codigo") or get("código") or get("cod") or get("id")
-        c_desc = get("descricao") or get("descrição") or get("servico") or get("serviço")
-        c_price = get("valor") or get("preco") or get("preço")
-        c_esf_min = get("esf minimo") or get("esf min") or get("esf_minimo")
-        c_esf_max = get("esf maximo") or get("esf max") or get("esf_maximo")
-        c_cil_min = get("cil minimo") or get("cil min") or get("cil_minimo")
-        c_cil_max = get("cil maximo") or get("cil max") or get("cil_maximo")
-        for i, row in enumerate(ws.iter_rows(min_row=2), start=2):
-            code = str(row[c_code-1].value).strip() if c_code else None
-            if not code:
-                continue
-            desc = str(row[c_desc-1].value).strip() if c_desc else ""
-            price = _dec(row[c_price-1].value, Decimal("0.00")) if c_price else Decimal("0.00")
-            esf_min = _dec(row[c_esf_min-1].value) if c_esf_min else None
-            esf_max = _dec(row[c_esf_max-1].value) if c_esf_max else None
-            cil_min = _dec(row[c_cil_min-1].value) if c_cil_min else None
-            cil_max = _dec(row[c_cil_max-1].value) if c_cil_max else None
-            catalog[code] = dict(description=desc, price=price, esf_min=esf_min, esf_max=esf_max, cil_min=cil_min, cil_max=cil_max)
-
-    if ws_serv is not None:
-        _ingest_service_sheet(ws_serv)
-    if ws_acr is not None:
-        _ingest_service_sheet(ws_acr)
-
-    # ---------- Prepare DB ----------
     with engine.begin() as conn:
-        # Upsert services catalog first
-        for code, data in catalog.items():
-            conn.execute(text("""
-                INSERT INTO orc_servico_catalogo (code, description, price)
-                VALUES (:c,:d,:p)
-                ON CONFLICT (code) DO UPDATE SET description=EXCLUDED.description, price=EXCLUDED.price
-            """), dict(c=code, d=data["description"], p=float(data["price"] or 0)))
-
-        # Read products sheet
-        H = _headers(ws_prod)
-        get = lambda key: H.get(key)
-        c_name  = get("produto") or get("nome")
-        c_code  = get("codigo") or get("código") or get("cod")
-        c_price = get("valor") or get("preco") or get("preço")
-        c_visao = get("tipo de visao") or get("tipo de visão")
-        c_ar    = get("anti-reflexo") or get("antirreflexo") or get("antirreflexo ")
-        c_foto  = get("fotosensivel") or get("fotosensível")
-        c_azul  = get("filtro azul") or get("azul") or get("blue")
-        c_esf_min = get("esf minimo") or get("esf min")
-        c_esf_max = get("esf maximo") or get("esf max")
-        c_cil_min = get("cil minimo") or get("cil min")
-        c_cil_max = get("cil maximo") or get("cil max")
-        c_obrig = get("servicos obrigatorios") or get("serviços obrigatórios")
-        c_opc   = get("servicos disponiveis") or get("serviços disponiveis") or get("serviços disponíveis")
-        c_acr   = get("acrescimos") or get("acréscimos")
-
-        counters = dict(prod_inserted=0, prod_updated=0, serv_obrig_upserts=0, serv_opc_upserts=0, acresc_upserts=0, rows=0)
-
-        for i, row in enumerate(ws_prod.iter_rows(min_row=2), start=2):
-            counters["rows"] += 1
-            code = str(row[c_code-1].value).strip() if c_code else None
-            name = str(row[c_name-1].value).strip() if c_name else None
-            if not code or not name:
+        for i in range(2, ws.max_row + 1):
+            rows += 1
+            nome = (ws.cell(i, idx_prod).value or "").strip()
+            code = (str(ws.cell(i, idx_code).value or "").strip())
+            if not nome or not code: 
                 continue
 
-            vis = (str(row[c_visao-1].value).strip().lower() if c_visao else "")
-            vis_norm = {"visao simples":"visao_simples","visão simples":"visao_simples","vs":"visao_simples","progressiva":"progressiva","bifocal":"bifocal"}.get(vis, "visao_simples")
-            ar   = 1 if str(row[c_ar-1].value).strip().lower() in ("1","sim","x","true","s","ar") else 0 if c_ar else 0
-            foto = 1 if str(row[c_foto-1].value).strip().lower() in ("1","sim","x","true","s","foto","fotosensivel","fotosensível") else 0 if c_foto else 0
-            azul = 1 if str(row[c_azul-1].value).strip().lower() in ("1","sim","x","true","s","azul","blue") else 0 if c_azul else 0
+            vis_raw = (str(ws.cell(i, idx_visao).value or "").strip().lower())
+            if vis_raw in ("vs","visao simples","visão simples","visao_simples","visão_simples"):
+                visao = "visao_simples"
+            elif vis_raw in ("progressiva",): visao = "progressiva"
+            elif vis_raw in ("bifocal",):     visao = "bifocal"
+            else: visao = "visao_simples"
 
-            price = _dec(row[c_price-1].value, Decimal("0.00")) if c_price else Decimal("0.00")
-            esf_min = _dec(row[c_esf_min-1].value, Decimal("0")) if c_esf_min else Decimal("0")
-            esf_max = _dec(row[c_esf_max-1].value, Decimal("0")) if c_esf_max else Decimal("0")
-            cil_min = _dec(row[c_cil_min-1].value, Decimal("0")) if c_cil_min else Decimal("0")
-            cil_max = _dec(row[c_cil_max-1].value, Decimal("0")) if c_cil_max else Decimal("0")
+            price  = _to_dec(ws.cell(i, idx_valor).value, 0)
+            ar     = _b01(ws.cell(i, idx_ar).value)
+            foto   = _b01(ws.cell(i, idx_foto).value)
+            azul   = _b01(ws.cell(i, idx_azul).value)
+            esfmin = _to_dec(ws.cell(i, idx_esfmin).value, 0)
+            esfmax = _to_dec(ws.cell(i, idx_esfmax).value, 0)
+            cilmin = _to_dec(ws.cell(i, idx_cilmin).value, 0)
+            cilmax = _to_dec(ws.cell(i, idx_cilmax).value, 0)
 
-            # upsert product
             r = conn.execute(text("""
-                INSERT INTO orc_produto (code, name, price, visao, ar, foto, azul, esf_min, esf_max, cil_min, cil_max, updated_at)
-                VALUES (:code,:name,:price,:visao,:ar,:foto,:azul,:esf_min,:esf_max,:cil_min,:cil_max, NOW())
-                ON CONFLICT (code) DO UPDATE SET
-                  name=EXCLUDED.name, price=EXCLUDED.price, visao=EXCLUDED.visao,
-                  ar=EXCLUDED.ar, foto=EXCLUDED.foto, azul=EXCLUDED.azul,
-                  esf_min=EXCLUDED.esf_min, esf_max=EXCLUDED.esf_max,
-                  cil_min=EXCLUDED.cil_min, cil_max=EXCLUDED.cil_max,
-                  updated_at=NOW()
-                RETURNING (xmax = 0) AS inserted
-            """), dict(code=code,name=name,price=float(price or 0),visao=vis_norm,ar=ar,foto=foto,azul=azul,
-                       esf_min=float(esf_min or 0),esf_max=float(esf_max or 0),cil_min=float(cil_min or 0),cil_max=float(cil_max or 0)))
-            inserted = r.fetchone()[0]
-            if inserted: counters["prod_inserted"] += 1
-            else: counters["prod_updated"] += 1
+              INSERT INTO orc_produto (code,name,price,visao,ar,foto,azul,esf_min,esf_max,cil_min,cil_max,updated_at)
+              VALUES (:code,:name,:price,:visao,:ar,:foto,:azul,:esfmin,:esfmax,:cilmin,:cilmax,NOW())
+              ON CONFLICT (code) DO UPDATE SET
+                name=EXCLUDED.name, price=EXCLUDED.price, visao=EXCLUDED.visao,
+                ar=EXCLUDED.ar, foto=EXCLUDED.foto, azul=EXCLUDED.azul,
+                esf_min=EXCLUDED.esf_min, esf_max=EXCLUDED.esf_max,
+                cil_min=EXCLUDED.cil_min, cil_max=EXCLUDED.cil_max,
+                updated_at=NOW()
+              RETURNING (xmax = 0) AS inserted, id
+            """), {"code":code,"name":nome,"price":price,"visao":visao,"ar":ar,"foto":foto,"azul":azul,
+                   "esfmin":esfmin,"esfmax":esfmax,"cilmin":cilmin,"cilmax":cilmax})
+            row = r.fetchone()
+            inserted = bool(row[0]); pid = row[1]
+            prod_ins += 1 if inserted else 0
+            prod_upd += 0 if inserted else 1
 
-            prod = db_one("SELECT id FROM orc_produto WHERE code=:c", c=code)
-            pid = prod["id"]
-
-            # clean old mappings for this product
-            conn.execute(text("DELETE FROM orc_produto_serv_obrig WHERE produto_id=:p"), dict(p=pid))
-            conn.execute(text("DELETE FROM orc_produto_serv_opc WHERE produto_id=:p"), dict(p=pid))
-            conn.execute(text("DELETE FROM orc_produto_acrescimo WHERE produto_id=:p"), dict(p=pid))
-
-            obrigs = _split_codes(row[c_obrig-1].value) if c_obrig else []
-            opcs   = _split_codes(row[c_opc-1].value) if c_opc else []
-            acrs   = _split_codes(row[c_acr-1].value) if c_acr else []
-
-            for code_ob in obrigs:
-                if code_ob not in catalog:
-                    # upsert no catalog with zero price if missing
-                    conn.execute(text("""INSERT INTO orc_servico_catalogo (code, description, price)
-                                         VALUES (:c,'',0) ON CONFLICT (code) DO NOTHING"""), dict(c=code_ob))
-                conn.execute(text("""INSERT INTO orc_produto_serv_obrig (produto_id, serv_code)
-                                     VALUES (:p,:c) ON CONFLICT DO NOTHING"""), dict(p=pid, c=code_ob))
-                counters["serv_obrig_upserts"] += 1
-
-            for code_op in opcs:
-                if code_op not in catalog:
-                    conn.execute(text("""INSERT INTO orc_servico_catalogo (code, description, price)
-                                         VALUES (:c,'',0) ON CONFLICT (code) DO NOTHING"""), dict(c=code_op))
-                conn.execute(text("""INSERT INTO orc_produto_serv_opc (produto_id, serv_code)
-                                     VALUES (:p,:c) ON CONFLICT DO NOTHING"""), dict(p=pid, c=code_op))
-                counters["serv_opc_upserts"] += 1
-
-            for code_ac in acrs:
-                data = catalog.get(code_ac)
-                if not data:
-                    # create placeholder if not found
-                    conn.execute(text("""INSERT INTO orc_servico_catalogo (code, description, price)
-                                         VALUES (:c,'',0) ON CONFLICT (code) DO NOTHING"""), dict(c=code_ac))
-                    data = dict(esf_min=None, esf_max=None, cil_min=None, cil_max=None)
+            for sc in _split_codes(ws.cell(i, idx_servob).value):
+                conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"), {"c": sc})
                 conn.execute(text("""
-                    INSERT INTO orc_produto_acrescimo (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max)
-                    VALUES (:p,:c,:emin,:emax,:cmin,:cmax)
-                    ON CONFLICT DO NOTHING
-                """), dict(p=pid, c=code_ac,
-                           emin=float(data["esf_min"]) if data["esf_min"] is not None else None,
-                           emax=float(data["esf_max"]) if data["esf_max"] is not None else None,
-                           cmin=float(data["cil_min"]) if data["cil_min"] is not None else None,
-                           cmax=float(data["cil_max"]) if data["cil_max"] is not None else None))
-                counters["acresc_upserts"] += 1
+                  INSERT INTO orc_produto_serv_obrig (produto_id, serv_code)
+                  VALUES (:pid, :sc)
+                  ON CONFLICT (produto_id, serv_code) DO NOTHING
+                """), {"pid": pid, "sc": sc})
+                serv_ob_upserts += 1
 
-    flash(f"Regras do orçamento importadas: {counters}", "success")
+            for sc in _split_codes(ws.cell(i, idx_servop).value):
+                conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"), {"c": sc})
+                conn.execute(text("""
+                  INSERT INTO orc_produto_serv_opc (produto_id, serv_code)
+                  VALUES (:pid, :sc)
+                  ON CONFLICT (produto_id, serv_code) DO NOTHING
+                """), {"pid": pid, "sc": sc})
+                serv_opc_upserts += 1
+
+            if idx_acresc:
+                for code_ac, esf_min, esf_max, cil_min, cil_max in _parse_acresc(ws.cell(i, idx_acresc).value):
+                    conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"),
+                                 {"c": code_ac})
+                    conn.execute(text("""
+                      INSERT INTO orc_produto_acrescimo (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max)
+                      VALUES (:pid,:sc,:esfmin,:esfmax,:cilmin,:cilmax)
+                      ON CONFLICT (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max) DO NOTHING
+                    """), {"pid":pid,"sc":code_ac,
+                             "esfmin":esf_min,"esfmax":esf_max,"cilmin":cil_min,"cilmax":cil_max})
+                    acresc_upserts += 1
+
+    session['imp_orcamento'] = {
+        "prod_inserted": prod_ins, "prod_updated": prod_upd,
+        "serv_obrig_upserts": serv_ob_upserts, "serv_opc_upserts": serv_opc_upserts,
+        "acresc_upserts": acresc_upserts, "rows": rows
+    }
+    flash("Importação das regras do orçamento concluída.", "success")
     return redirect(url_for('admin_import'))
 
 @app.route("/compras/novo", methods=["GET","POST"])
