@@ -1313,10 +1313,11 @@ def admin_import_orcamento():
             c_acresc = pcol("acrescimos","acréscimos","acréscimo")
 
             limit = int(os.environ.get('ORC_IMPORT_ROW_LIMIT', '0') or 0)
-count = 0
-for row in ws_prod.iter_rows(min_row=2):
-                count += 1
-                if limit and count > limit:
+
+            for _i, row in enumerate(ws_prod.iter_rows(min_row=2), start=1):
+
+                if limit and _i > limit:
+
                     break
                 report["rows"] += 1
                 name = str(row[c_nome].value).strip() if c_nome is not None and row[c_nome].value is not None else ""
@@ -1524,11 +1525,12 @@ for row in ws_prod.iter_rows(min_row=2):
         c_acresc = pcol("acrescimos","acréscimos","acréscimo")
 
         limit = int(os.environ.get('ORC_IMPORT_ROW_LIMIT', '0') or 0)
-count = 0
-for row in ws_prod.iter_rows(min_row=2):
-                count += 1
-                if limit and count > limit:
-                    break
+
+        for _i, row in enumerate(ws_prod.iter_rows(min_row=2), start=1):
+
+            if limit and _i > limit:
+
+                break
             name = str(row[c_nome].value).strip() if c_nome is not None and row[c_nome].value is not None else ""
             code = norm(row[c_cod].value) if c_cod is not None else ""
             if not name or not code:  # ignora linhas em branco
