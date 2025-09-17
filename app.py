@@ -587,12 +587,9 @@ def api_orcamento_options():
     data = request.get_json(force=True) or {}
     visao = (data.get("visao") or "").strip()
     flags = data.get("flags") or {}
-    ar = bool(flags.get("ar"))
-    ar_i = 1 if ar else 0
+    ar   = bool(flags.get("ar"))
     foto = bool(flags.get("foto"))
-    foto_i = 1 if foto else 0
     azul = bool(flags.get("azul"))
-    azul_i = 1 if azul else 0
 
     od = data.get("od") or {}; oe = data.get("oe") or {}
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
@@ -610,7 +607,7 @@ def api_orcamento_options():
 
     products = []
     with engine.begin() as conn:
-        for r in conn.execute(q, {"visao": visao, "ar": ar_i, "foto": foto_i, "azul": azul_i}).mappings():
+        for r in conn.execute(q, {"visao":visao,"ar":ar,"foto":foto,"azul":azul}).mappings():
             ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
             ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
             if ok_od and ok_oe:
@@ -670,6 +667,42 @@ def api_orcamento_services():
             mandatory.append({"id": a["serv_code"], "name": a["name"], "price": float(a["price"])})
 
     optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
+    # --- Acrescimos que entram como indispensáveis quando ESF OU CIL atende a faixa (OD ou OE) ---
+    def _in_range(v, vmin, vmax):
+        # Se ambos None, não restringe; se só um existir, usa o próprio valor como limite oposto
+        if vmin is None and vmax is None:
+            return True
+        v = float(v)
+        lo = float(vmin) if vmin is not None else v
+        hi = float(vmax) if vmax is not None else v
+        if lo > hi: lo, hi = hi, lo
+        return lo <= v <= hi
+
+    def _ok_for_eye(esf, cil, row):
+        esf_ok = (row.get("esf_min") is not None or row.get("esf_max") is not None) and _in_range(esf, row.get("esf_min"), row.get("esf_max"))
+        cil_ok = (row.get("cil_min") is not None or row.get("cil_max") is not None) and _in_range(cil, row.get("cil_min"), row.get("cil_max"))
+        # OR entre dimensões: basta um eixo (ESF ou CIL) satisfazer
+        return esf_ok or cil_ok
+
+    mandatory_ob = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
+
+    add_from_ac = []
+    for r in ac:
+        if _ok_for_eye(od_esf, od_cil, r) or _ok_for_eye(oe_esf, oe_cil, r):
+            add_from_ac.append({"id": r["serv_code"], "name": r["name"], "price": float(r["price"])})
+
+    # dedupe por código: obrigatórios primeiro, depois acréscimos válidos
+    seen = set(); mandatory = []
+    for lst in (mandatory_ob, add_from_ac):
+        for item in lst:
+            cid = str(item["id"])
+            if cid in seen: 
+                continue
+            seen.add(cid)
+            mandatory.append(item)
+
+    optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
+
     return {"mandatory": mandatory, "optional": optional}
 # ================== fim das APIs de Orçamento ==================
 
