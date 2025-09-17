@@ -62,13 +62,13 @@
           <tr>
             <th>OD</th>
             <td><input id="od_esf" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="od_cil" class="field" type="text" step="0.25" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
+            <td><input id="od_cil" class="field" type="text" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
             <td><input id="od_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
           </tr>
           <tr>
             <th>OE</th>
             <td><input id="oe_esf" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="oe_cil" class="field" type="text" step="0.25" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
+            <td><input id="oe_cil" class="field" type="text" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
             <td><input id="oe_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
           </tr>
         </tbody>
@@ -135,33 +135,24 @@
 
   const sel_produto = document.getElementById('sel_produto');
 
-// === Normalização para Cilíndrico com vírgula ===
-function toNumberPt(v) {
-  if (v == null) return null;
-  v = String(v).trim().replace(',', '.');
-  if (v === '') return null;
-  const n = Number(v);
-  return Number.isNaN(n) ? null : n;
-}
-function normalizeCylinder(el) {
+// Helpers p/ cilíndrico com vírgula (faixa -10..0, passo 0.25)
+function toNumberPt(v){ if(v==null) return null; v=String(v).trim().replace(',', '.'); if(v==='') return null; const n=Number(v); return Number.isNaN(n)?null:n; }
+function normalizeCylinder(el){
   const n0 = toNumberPt(el.value);
-  if (n0 == null) { el.value = ''; return; }
+  if(n0==null){ el.value=''; return; }
   let n = n0;
-  if (n > 0) n = -n;            // força negativo (exceto 0)
-  // limites: -10 .. 0
-  if (n < -10) n = -10;
-  if (n > 0) n = 0;
-  // passo 0.25
-  n = Math.round(n * 4) / 4;
-  if (Object.is(n, -0)) n = 0;
-  // exibe com vírgula
+  if(n>0) n = -n;           // força negativo (exceto 0)
+  if(n < -10) n = -10;
+  if(n > 0) n = 0;
+  n = Math.round(n*4)/4;    // passo 0.25
+  if(Object.is(n,-0)) n = 0;
   el.value = String(n).replace('.', ',');
 }
-function clampEixo(el) {
-  let v = parseInt((el.value || '0'), 10);
-  if (Number.isNaN(v)) v = 0;
-  if (v < 0) v = 0;
-  if (v > 359) v = 359;
+function clampEixo(el){
+  let v = parseInt((el.value||'0'),10);
+  if(Number.isNaN(v)) v = 0;
+  if(v<0) v = 0;
+  if(v>359) v = 359;
   el.value = String(v);
 }
 
@@ -186,14 +177,8 @@ function clampEixo(el) {
   }
   visao.addEventListener('change', enableRecipeFields);
 
-;[od_cil, oe_cil].forEach(el => {
-  el.addEventListener('blur', () => normalizeCylinder(el));
-  el.addEventListener('change', () => normalizeCylinder(el));
-});
-;[od_eixo, oe_eixo].forEach(el => {
-  el.addEventListener('blur', () => clampEixo(el));
-  el.addEventListener('change', () => clampEixo(el));
-});
+  ;[od_cil, oe_cil].forEach(el=>{ el.addEventListener('blur', ()=>normalizeCylinder(el)); el.addEventListener('change', ()=>normalizeCylinder(el)); });
+  ;[od_eixo, oe_eixo].forEach(el=>{ el.addEventListener('blur', ()=>clampEixo(el)); el.addEventListener('change', ()=>clampEixo(el)); });
 
 
   [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
