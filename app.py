@@ -131,7 +131,7 @@ def init_db():
       id SERIAL PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('admin','comprador','pagador')),
+      role TEXT NOT NULL CHECK (role IN ('admin','comprador','pagador','cliente')),
       created_at TIMESTAMP NOT NULL
     );
 
@@ -221,6 +221,25 @@ CREATE TABLE IF NOT EXISTS audit_log (
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
+        -- Atualiza CHECK de users.role para incluir 'cliente'
+        BEGIN
+          DO $$
+          DECLARE r record;
+          BEGIN
+            FOR r IN
+              SELECT c.conname
+              FROM pg_constraint c
+              JOIN pg_class t ON c.conrelid = t.oid
+              WHERE t.relname='users' AND c.contype='c'
+                AND pg_get_constraintdef(c.oid) ILIKE '%role IN (%'
+            LOOP
+              EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', r.conname);
+            END LOOP;
+          END $$;
+          ALTER TABLE users
+          ADD CONSTRAINT users_role_check
+          CHECK (role IN ('admin','comprador','pagador','cliente'));
+        EXCEPTION WHEN others THEN NULL; END;
         try:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS in_stock INTEGER NOT NULL DEFAULT 0"))
         except Exception:
@@ -529,7 +548,7 @@ def admin_users_create():
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
     role = request.form.get("role") or "comprador"
-    if not username or not password or role not in ("admin","comprador","pagador"):
+    if not username or not password or role not in ("admin","comprador","pagador","cliente"):
         flash("Dados inválidos.", "error"); return redirect(url_for("admin_users"))
     from werkzeug.security import generate_password_hash
     try:
@@ -1479,3 +1498,277 @@ def extornos_criar(item_id):
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
 
+
+
+
+# -------- Orçamento: tela e APIs --------
+
+@app.route("/orcamento", methods=["GET"])
+def orcamento():
+    ret = require_role("admin", "comprador", "pagador", "cliente")
+    if ret: return ret
+    return render_template("orcamento.html")
+
+from decimal import Decimal
+import re
+
+def _to_decimal_local(v, default=0):
+    try:
+        if v in (None, ""): return Decimal(default)
+        return Decimal(str(v))
+    except Exception:
+        try:
+            return Decimal(str(v).replace(",", "."))
+        except Exception:
+            return Decimal(default)
+
+def _split_codes_local(s):
+    if not s: return []
+    parts = re.split(r"[.;,]\s*", str(s).strip())
+    return [p.strip() for p in parts if p.strip()]
+
+@app.post("/api/orcamento/options")
+def api_orcamento_options():
+    ret = require_role("admin","comprador","pagador","cliente")
+    if ret: return ret
+
+    data = request.get_json(force=True) or {}
+    visao = (data.get("visao") or "").strip()
+    flags = data.get("flags") or {}
+    ar   = bool(flags.get("ar"))
+    foto = bool(flags.get("foto"))
+    azul = bool(flags.get("azul"))
+
+    od = data.get("od") or {}; oe = data.get("oe") or {}
+    od_esf = _to_decimal_local(od.get("esf"), 0); od_cil = _to_decimal_local(od.get("cil"), 0)
+    oe_esf = _to_decimal_local(oe.get("esf"), 0); oe_cil = _to_decimal_local(oe.get("cil"), 0)
+
+    q = text("""
+      SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
+      FROM orc_produto
+      WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
+    """)
+    products = []
+    with engine.begin() as conn:
+        for r in conn.execute(q, {"visao":visao,"ar":ar,"foto":foto,"azul":azul}).mappings():
+            def inrng(v, a, b):
+                lo = min(Decimal(a), Decimal(b)); hi = max(Decimal(a), Decimal(b))
+                return Decimal(v) >= lo and Decimal(v) <= hi
+            ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
+            ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
+            if ok_od and ok_oe:
+                products.append({"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)})
+    return {"products": products}
+
+@app.post("/api/orcamento/services")
+def api_orcamento_services():
+    ret = require_role("admin","comprador","pagador","cliente")
+    if ret: return ret
+
+    data = request.get_json(force=True) or {}
+    pid = int(data.get("product_id"))
+
+    od = data.get("od") or {}; oe = data.get("oe") or {}
+    od_esf = _to_decimal_local(od.get("esf"), 0); od_cil = _to_decimal_local(od.get("cil"), 0)
+    oe_esf = _to_decimal_local(oe.get("esf"), 0); oe_cil = _to_decimal_local(oe.get("cil"), 0)
+
+    with engine.begin() as conn:
+        ob = conn.execute(text("""
+          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_serv_obrig o
+          JOIN orc_servico_catalogo c ON c.code=o.serv_code
+          WHERE o.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+        op = conn.execute(text("""
+          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_serv_opc o
+          JOIN orc_servico_catalogo c ON c.code=o.serv_code
+          WHERE o.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+        ac = conn.execute(text("""
+          SELECT a.serv_code, a.esf_min, a.esf_max, a.cil_min, a.cil_max,
+                 COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_acrescimo a
+          JOIN orc_servico_catalogo c ON c.code=a.serv_code
+          WHERE a.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+    def within(v, a, b):
+        if a is None and b is None: return False
+        a = Decimal(a) if a is not None else Decimal(v)
+        b = Decimal(b) if b is not None else Decimal(v)
+        lo = min(a,b); hi = max(a,b)
+        return Decimal(v) >= lo and Decimal(v) <= hi
+
+    mandatory = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
+
+    for a in ac:
+        trig_od = within(od_esf, a["esf_min"], a["esf_max"]) and within(od_cil, a["cil_min"], a["cil_max"])
+        trig_oe = within(oe_esf, a["esf_min"], a["esf_max"]) and within(oe_cil, a["cil_min"], a["cil_max"])
+        if trig_od or trig_oe:
+            mandatory.append({"id": a["serv_code"], "name": a["name"], "price": float(a["price"])})
+
+    optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
+    return {"mandatory": mandatory, "optional": optional}
+
+# -------- Importar Regras do Orçamento (Admin) --------
+@app.post("/admin/import_orcamento")
+def admin_import_orcamento():
+    ret = require_role("admin")
+    if ret: return ret
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        flash("Biblioteca openpyxl não instalada.", "error")
+        return redirect(request.referrer or url_for("admin_import"))
+
+    file = request.files.get("file_orcamento")
+    if not file or file.filename == "":
+        flash("Selecione um arquivo .xlsx", "error")
+        return redirect(request.referrer or url_for("admin_import"))
+
+    try:
+        wb = load_workbook(filename=file, data_only=True)
+        ws = wb.worksheets[0]
+    except Exception as e:
+        flash(f"Erro ao ler Excel: {e}", "error")
+        return redirect(request.referrer or url_for("admin_import"))
+
+    header_map = {}
+    for j, c in enumerate(ws[1], start=1):
+        header_map[(str(c.value or "").strip().lower())] = j
+
+    def col(*names):
+        for n in names:
+            n = n.lower()
+            if n in header_map: return header_map[n]
+        return None
+
+    idx_prod   = col("produto","nome")
+    idx_code   = col("código","codigo","cod")
+    idx_valor  = col("valor","preço","preco")
+    idx_visao  = col("tipo de visão","tipo de visao","visao","visão","tv")
+    idx_ar     = col("antirreflexo","anti-reflexo","ar")
+    idx_foto   = col("fotosensível","fotossensivel","foto")
+    idx_azul   = col("filtro azul","azul","blue")
+    idx_esfmin = col("esf mínimo","esf minimo","esf min","esf_min")
+    idx_esfmax = col("esf máximo","esf maximo","esf max","esf_max")
+    idx_cilmin = col("cil mínimo","cil minimo","cil min","cil_min")
+    idx_cilmax = col("cil máximo","cil maximo","cil max","cil_max")
+    idx_servob = col("serviços obrigatórios","servicos obrigatorios","obrigatórios","obrigatorios","n1-14")
+    idx_servop = col("serviços disponíveis","servicos disponiveis","disponíveis","disponiveis","o15")
+    idx_acresc = col("acréscimos","acrescimos","acréscimo","acrescimo")
+
+    must = [idx_prod,idx_code,idx_valor,idx_visao,idx_ar,idx_foto,idx_azul,idx_esfmin,idx_esfmax,idx_cilmin,idx_cilmax,idx_servob,idx_servop]
+    if not all(must):
+        flash("Cabeçalhos ausentes na 1ª aba. Confira os nomes.", "error")
+        return redirect(request.referrer or url_for("admin_import"))
+
+    prod_ins = prod_upd = 0
+    serv_ob_upserts = serv_opc_upserts = acresc_upserts = 0
+    rows = 0
+
+    with engine.begin() as conn:
+        for i in range(2, ws.max_row + 1):
+            rows += 1
+            nome = (ws.cell(i, idx_prod).value or "").strip()
+            code = (str(ws.cell(i, idx_code).value or "").strip())
+            if not nome or not code: continue
+
+            vis_raw = (str(ws.cell(i, idx_visao).value or "").strip().lower())
+            if vis_raw in ("vs","visao simples","visão simples","visao_simples","visão_simples"):
+                visao = "visao_simples"
+            elif vis_raw in ("progressiva",):
+                visao = "progressiva"
+            elif vis_raw in ("bifocal",):
+                visao = "bifocal"
+            else:
+                visao = "visao_simples"
+
+            price  = _to_decimal_local(ws.cell(i, idx_valor).value, 0)
+            ar     = str(ws.cell(i, idx_ar).value).strip().lower() in ("1","sim","s","true","t","x")
+            foto   = str(ws.cell(i, idx_foto).value).strip().lower() in ("1","sim","s","true","t","x")
+            azul   = str(ws.cell(i, idx_azul).value).strip().lower() in ("1","sim","s","true","t","x")
+            esfmin = _to_decimal_local(ws.cell(i, idx_esfmin).value, 0)
+            esfmax = _to_decimal_local(ws.cell(i, idx_esfmax).value, 0)
+            cilmin = _to_decimal_local(ws.cell(i, idx_cilmin).value, 0)
+            cilmax = _to_decimal_local(ws.cell(i, idx_cilmax).value, 0)
+
+            r = conn.execute(text("""
+              INSERT INTO orc_produto (code,name,price,visao,ar,foto,azul,esf_min,esf_max,cil_min,cil_max,updated_at)
+              VALUES (:code,:name,:price,:visao,:ar,:foto,:azul,:esfmin,:esfmax,:cilmin,:cilmax,NOW())
+              ON CONFLICT (code) DO UPDATE SET
+                name=EXCLUDED.name, price=EXCLUDED.price, visao=EXCLUDED.visao,
+                ar=EXCLUDED.ar, foto=EXCLUDED.foto, azul=EXCLUDED.azul,
+                esf_min=EXCLUDED.esf_min, esf_max=EXCLUDED.esf_max,
+                cil_min=EXCLUDED.cil_min, cil_max=EXCLUDED.cil_max,
+                updated_at=NOW()
+              RETURNING (xmax = 0) AS inserted, id
+            """), {"code":code,"name":nome,"price":price,"visao":visao,"ar":ar,"foto":foto,"azul":azul,
+                   "esfmin":esfmin,"esfmax":esfmax,"cilmin":cilmin,"cilmax":cilmax})
+            row = r.fetchone()
+            inserted = bool(row[0]); pid = row[1]
+            prod_ins += 1 if inserted else 0
+            prod_upd += 0 if inserted else 1
+
+            for sc in _split_codes_local(ws.cell(i, idx_servob).value):
+                conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"), {"c": sc})
+                conn.execute(text("""
+                  INSERT INTO orc_produto_serv_obrig (produto_id, serv_code)
+                  VALUES (:pid, :sc)
+                  ON CONFLICT (produto_id, serv_code) DO NOTHING
+                """), {"pid": pid, "sc": sc})
+                serv_ob_upserts += 1
+
+            for sc in _split_codes_local(ws.cell(i, idx_servop).value):
+                conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"), {"c": sc})
+                conn.execute(text("""
+                  INSERT INTO orc_produto_serv_opc (produto_id, serv_code)
+                  VALUES (:pid, :sc)
+                  ON CONFLICT (produto_id, serv_code) DO NOTHING
+                """), {"pid": pid, "sc": sc})
+                serv_opc_upserts += 1
+
+            if idx_acresc:
+                expr = ws.cell(i, idx_acresc).value
+                items = []
+                if expr:
+                    for ac in _split_codes_local(expr):
+                        m = re.match(r'^\s*([A-Za-z0-9]+)\s*(?:\[(.*?)\])?\s*$', ac)
+                        if m:
+                            code_ac = m.group(1)
+                            esf_min = esf_max = cil_min = cil_max = None
+                            body = m.group(2)
+                            if body:
+                                for part in re.split(r'\s*;\s*', body):
+                                    pm = re.match(r'^(esf|cil)\s*:\s*([+\-]?\d+(?:[.,]\d+)?)\s*(?:\.\.|a|to|-)\s*([+\-]?\d+(?:[.,]\d+)?)\s*$', part, flags=re.I)
+                                    if pm:
+                                        kind = pm.group(1).lower()
+                                        v1 = _to_decimal_local(pm.group(2))
+                                        v2 = _to_decimal_local(pm.group(3))
+                                        lo = min(v1, v2); hi = max(v1, v2)
+                                        if kind == "esf":
+                                            esf_min, esf_max = lo, hi
+                                        else:
+                                            cil_min, cil_max = lo, hi
+                            items.append((code_ac, esf_min, esf_max, cil_min, cil_max))
+                        else:
+                            items.append((ac, None, None, None, None))
+                for code_ac, esf_min, esf_max, cil_min, cil_max in items:
+                    conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"),
+                                 {"c": code_ac})
+                    conn.execute(text("""
+                      INSERT INTO orc_produto_acrescimo (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max)
+                      VALUES (:pid,:sc,:esfmin,:esfmax,:cilmin,:cilmax)
+                      ON CONFLICT (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max) DO NOTHING
+                    """), {"pid":pid,"sc":code_ac,
+                             "esfmin":esf_min,"esfmax":esf_max,"cilmin":cil_min,"cilmax":cil_max})
+                    acresc_upserts += 1
+
+    return render_template("admin_import.html", imp_orcamento={
+        "prod_inserted": prod_ins, "prod_updated": prod_upd,
+        "serv_obrig_upserts": serv_ob_upserts, "serv_opc_upserts": serv_opc_upserts,
+        "acresc_upserts": acresc_upserts, "rows": rows
+    })

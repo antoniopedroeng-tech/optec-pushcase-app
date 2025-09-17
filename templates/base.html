@@ -19,7 +19,7 @@
     .menu-grid{
       display:grid;
       grid-auto-flow:column dense;
-      grid-template-rows:repeat(2, 44px);  /* quadradinho em cima e embaixo */
+      grid-template-rows:repeat(2, 44px);
       grid-auto-columns:minmax(120px, auto);
       justify-content:start;
       column-gap:8px; row-gap:8px;
@@ -43,51 +43,46 @@
     th, td { border-bottom:1px solid var(--borda); padding:10px; text-align:left; }
     th { background:var(--azul-claro); color:#102a56; }
     tr:last-child td{ border-bottom:none; }
-    .btn { display:inline-block; padding:6px 10px; border:1px solid var(--borda); border-radius:8px; background:#fff; cursor:pointer; text-decoration:none; }
-    .btn.primary { background:var(--azul); color:#fff; border-color:var(--azul); }
-    .btn.danger { background:#d7263d; color:#fff; border-color:#d7263d; }
-    .btn.small { font-size:0.9em; padding:4px 8px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    textarea, input, select { width:100%; padding:8px; margin:6px 0; border:1px solid var(--borda); border-radius:8px; }
-    h2{ color:#0d419d; }
-
-    /* Responsivo: quando apertar muito, vira grade de 2 colunas */
-    @media (max-width: 720px){
-      .menu-grid{
-        grid-auto-flow:row;
-        grid-template-rows:none;
-        grid-template-columns:repeat(2, minmax(120px,1fr));
-      }
-    }
+    .muted { color:#6b7280; }
+    .btn { display:inline-block; background:#1f6feb; color:#fff; border:1px solid #1f6feb; padding:8px 12px; border-radius:10px; text-decoration:none; cursor:pointer; }
+    .btn.small{ padding:6px 10px; font-size:.9rem; }
+    .btn.danger{ background:#c53030; border-color:#c53030; }
+    form.grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
+    form.grid .wide { grid-column:1/-1; }
+    input, select, textarea { width:100%; padding:10px 12px; border:1px solid #d6dbe6; border-radius:10px; }
   </style>
 </head>
 <body>
   <header>
     <div class="wrap">
-      <div class="brand">OPTEC PUSHCASE APP</div>
+      <div class="brand">{{ app_name }}</div>
       <nav class="menu-grid">
         <a href="{{ url_for('index') }}">Início</a>
         {% if not user %}
           <a href="{{ url_for('login') }}">Login</a>
         {% else %}
-          {% if role == 'admin' %}
-            <a href="{{ url_for('admin_users') }}">Admin Usuários</a>
-            <a href="{{ url_for('admin_suppliers') }}">Admin Fornec.</a>
-            <a href="{{ url_for('admin_products') }}">Admin Produtos</a>
-            <a href="{{ url_for('admin_rules') }}">Admin Regras</a>
-            <!-- NOVOS atalhos do Admin -->
-            <a href="{{ url_for('admin_import') }}">Importar (Admin)</a>
-            <a href="{{ url_for('admin_import_template') }}">Template Import</a>
+          {% if role == 'cliente' %}
+            <a href="{{ url_for('orcamento') }}">Orçamento</a>
+            <a href="{{ url_for('logout') }}">Sair</a>
+          {% else %}
+            {% if role == 'admin' %}
+              <a href="{{ url_for('admin_users') }}">Admin Usuários</a>
+              <a href="{{ url_for('admin_suppliers') }}">Admin Fornec.</a>
+              <a href="{{ url_for('admin_products') }}">Admin Produtos</a>
+              <a href="{{ url_for('admin_rules') }}">Admin Regras</a>
+              <a href="{{ url_for('admin_import') }}">Importar (Admin)</a>
+              <a href="{{ url_for('orcamento') }}">Orçamento</a> <!-- no lugar de Template Import -->
+            {% endif %}
+            {% if role in ['comprador','admin'] %}
+              <a href="{{ url_for('compras_lista') }}">Meus Pedidos</a>
+              <a href="{{ url_for('compras_novo') }}">Novo Pedido</a>
+            {% endif %}
+            {% if role in ['pagador','admin'] %}
+              <a href="{{ url_for('pagamentos_lista') }}">Pendentes</a>
+              <a href="{{ url_for('relatorios_index') }}">Relatórios</a>
+            {% endif %}
+            <a href="{{ url_for('logout') }}">Sair</a>
           {% endif %}
-          {% if role in ['comprador','admin'] %}
-            <a href="{{ url_for('compras_lista') }}">Meus Pedidos</a>
-            <a href="{{ url_for('compras_novo') }}">Novo Pedido</a>
-          {% endif %}
-          {% if role in ['pagador','admin'] %}
-            <a href="{{ url_for('pagamentos_lista') }}">Pendentes</a>
-            <a href="{{ url_for('relatorios_index') }}">Relatórios</a>
-          {% endif %}
-          <a href="{{ url_for('logout') }}">Sair</a>
         {% endif %}
       </nav>
     </div>

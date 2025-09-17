@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Admin → Usuários</h2>
+
 <form method="post" action="{{ url_for('admin_users_create') }}" class="grid" style="margin-bottom:16px;">
   <div>
     <label>Novo usuário</label>
@@ -12,30 +13,38 @@
   </div>
   <div>
     <label>Papel</label>
-    <select name="role">
+    <select name="role" required>
       <option value="comprador">comprador</option>
       <option value="pagador">pagador</option>
       <option value="admin">admin</option>
+      <option value="cliente">cliente</option> <!-- NOVO -->
     </select>
   </div>
-  <div style="display:flex; align-items:flex-end;">
-    <button class="btn primary">Criar</button>
+  <div class="wide">
+    <button class="btn">Criar usuário</button>
   </div>
 </form>
+
 <table>
-  <tr><th>ID</th><th>Usuário</th><th>Papel</th><th>Criado em</th><th>Ações</th></tr>
-  {% for u in users %}
-  <tr>
-    <td>{{ u.id }}</td>
-    <td>{{ u.username }}</td>
-    <td>{{ u.role }}</td>
-    <td class="muted">{{ u.created_at }}</td>
-    <td>
-      <form method="post" action="{{ url_for('admin_users_delete', uid=u.id) }}" class="inline" onsubmit="return confirm('Excluir usuário {{u.username}}?');" style="display:inline;">
-        <button class="btn danger small">Excluir</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
+  <thead>
+    <tr>
+      <th>ID</th><th>Usuário</th><th>Papel</th><th>Criado em</th><th>Ações</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.id }}</td>
+      <td>{{ u.username }}</td>
+      <td>{{ u.role }}</td>
+      <td class="muted">{{ u.created_at }}</td>
+      <td>
+        <form method="post" action="{{ url_for('admin_users_delete', user_id=u.id) }}" onsubmit="return confirm('Excluir usuário {{u.username}}?');" style="display:inline;">
+          <button class="btn danger small">Excluir</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
 </table>
 {% endblock %}

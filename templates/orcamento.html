@@ -1,0 +1,324 @@
+﻿{% extends "base.html" %}
+{% block title %}Orçamento{% endblock %}
+{% block content %}
+
+<style>
+  .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  .label { font-weight:600; margin-bottom:6px; display:block; }
+  .muted { color:#6b7280; }
+  .field { width:100%; padding:10px 12px; border:1px solid #d1d5db; border-radius:10px; }
+  .field[disabled] { background:#f3f4f6; }
+  .table-mini { width:100%; border-collapse:separate; border-spacing: 0 8px; }
+  .table-mini th { text-align:left; font-weight:600; color:#374151; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .total { font-size:1.1rem; font-weight:700; }
+  .btn { border:1px solid #2563eb; color:#fff; background:#2563eb; padding:10px 14px; border-radius:10px; cursor:pointer; }
+  .btn.secondary { background:#6b7280; border-color:#6b7280; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:999px; padding:6px 10px; font-size:.9rem; }
+  @media (max-width: 980px) { .grid-2 { grid-template-columns: 1fr; } }
+</style>
+
+<h2 style="margin: 8px 0 16px;">Orçamento</h2>
+
+<div class="grid-2">
+
+  <!-- ESQUERDA -->
+  <div class="card">
+
+    <label class="label">Tipo de visão</label>
+    <select id="visao" class="field">
+      <option value="" selected disabled class="muted">Selecione uma opção</option>
+      <option value="visao_simples">Visão simples</option>
+      <option value="progressiva">Progressiva</option>
+      <option value="bifocal">Bifocal</option>
+    </select>
+
+    <div class="row" style="margin-top:12px">
+      <label class="row" style="gap:16px; align-items:center;">
+        <span style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="ck_ar" disabled>
+          <span>Anti-reflexo</span>
+        </span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="ck_foto" disabled>
+          <span>Fotosensível</span>
+        </span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="ck_azul" disabled>
+          <span>Filtro azul</span>
+        </span>
+      </label>
+    </div>
+
+    <div style="margin-top:16px;">
+      <table class="table-mini">
+        <thead>
+          <tr><th></th><th>Esférico</th><th>Cilíndrico</th><th>Eixo</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>OD</th>
+            <td><input id="od_esf" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="od_cil" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="od_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
+          </tr>
+          <tr>
+            <th>OE</th>
+            <td><input id="oe_esf" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="oe_cil" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="oe_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="box_adicao" style="display:none; margin-top:12px;">
+      <label class="label">Adição</label>
+      <input id="adicao" class="field" type="number" step="0.25" min="1.00" max="4.00" placeholder="+1.00 a +4.00">
+    </div>
+
+    <div style="margin-top:16px;">
+      <label class="label">Produto final</label>
+      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
+    </div>
+
+    <div class="row" style="margin-top:10px; align-items:center;">
+      <div class="total">Total: R$ <span id="total_val">0,00</span></div>
+      <div style="flex:0 0 auto">
+        <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DIREITA -->
+  <div class="card">
+    <label class="label">Produtos disponíveis</label>
+    <select id="sel_produto" class="field" disabled>
+      <option value="" selected disabled class="muted">Selecione um produto</option>
+    </select>
+
+    <div style="margin-top:14px;">
+      <label class="label">Serviços indispensáveis</label>
+      <div id="list_serv_mand" class="chips"></div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <label class="label">Serviços adicionais</label>
+      <select id="sel_serv_add" class="field" multiple size="5" disabled></select>
+      <div class="muted" style="margin-top:6px;">(Selecione um ou mais)</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  const money = (v) => (isNaN(v) ? 0 : v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  const visao = document.getElementById('visao');
+  const ck_ar = document.getElementById('ck_ar');
+  const ck_foto = document.getElementById('ck_foto');
+  const ck_azul = document.getElementById('ck_azul');
+
+  const od_esf = document.getElementById('od_esf');
+  const od_cil = document.getElementById('od_cil');
+  const od_eixo = document.getElementById('od_eixo');
+  const oe_esf = document.getElementById('oe_esf');
+  const oe_cil = document.getElementById('oe_cil');
+  const oe_eixo = document.getElementById('oe_eixo');
+
+  const box_adicao = document.getElementById('box_adicao');
+  const adicao = document.getElementById('adicao');
+
+  const sel_produto = document.getElementById('sel_produto');
+  const list_serv_mand = document.getElementById('list_serv_mand');
+  const sel_serv_add = document.getElementById('sel_serv_add');
+
+  const produto_final = document.getElementById('produto_final');
+  const total_val = document.getElementById('total_val');
+  const btn_limpar = document.getElementById('btn_limpar');
+
+  let state = { products:[], mandatory:[], optional:[], productSelected:null, optionalsSelected:[] };
+
+  function enableRecipeFields() {
+    [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo].forEach(el => el.disabled = false);
+    if (visao.value === 'progressiva' || visao.value === 'bifocal') {
+      box_adicao.style.display = '';
+    } else {
+      box_adicao.style.display = 'none';
+      adicao.value = '';
+    }
+    tryFetchOptions();
+  }
+  visao.addEventListener('change', enableRecipeFields);
+
+  [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
+    el.addEventListener('input', tryFetchOptions);
+    el.addEventListener('change', tryFetchOptions);
+  });
+
+  function recipeIsFilled() {
+    const fields = [od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo];
+    if (fields.some(f => f.value === '')) return false;
+    if ((visao.value === 'progressiva' || visao.value === 'bifocal') && adicao.value === '') return false;
+    return true;
+  }
+
+  async function tryFetchOptions() {
+    if (!visao.value) return;
+    if (!recipeIsFilled()) {
+      sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
+      sel_produto.disabled = true;
+      list_serv_mand.innerHTML = '';
+      sel_serv_add.innerHTML = '';
+      sel_serv_add.disabled = true;
+      state = { products:[], mandatory:[], optional:[], productSelected:null, optionalsSelected:[] };
+      updateSummaryAndTotal();
+      return;
+    }
+
+    const payload = {
+      visao: visao.value,
+      flags: { ar: ck_ar.checked, foto: ck_foto.checked, azul: ck_azul.checked },
+      od: { esf: parseFloat(od_esf.value||0), cil: parseFloat(od_cil.value||0), eixo: parseInt(od_eixo.value||0) },
+      oe: { esf: parseFloat(oe_esf.value||0), cil: parseFloat(oe_cil.value||0), eixo: parseInt(oe_eixo.value||0) },
+      adicao: adicao.value ? parseFloat(adicao.value) : null
+    };
+
+    try {
+      const resp = await fetch("{{ url_for('api_orcamento_options') }}", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+
+      state.products = data.products || [];
+      state.mandatory = data.mandatory || [];
+      state.optional = data.optional || [];
+      state.productSelected = null;
+      state.optionalsSelected = [];
+
+      sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
+      state.products.forEach(p => {
+        const o = document.createElement('option');
+        o.value = String(p.id);
+        o.textContent = `${p.name} — R$ ${money(p.price)}`;
+        o.dataset.price = p.price ?? 0;
+        sel_produto.appendChild(o);
+      });
+      sel_produto.disabled = state.products.length === 0;
+
+      // limpa serviços até escolher o produto
+      list_serv_mand.innerHTML = '';
+      sel_serv_add.innerHTML = '';
+      sel_serv_add.disabled = true;
+
+      updateSummaryAndTotal();
+
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  sel_produto.addEventListener('change', async () => {
+    const id = sel_produto.value;
+    state.productSelected = state.products.find(p => String(p.id) === id) || null;
+
+    const payload = {
+      product_id: parseInt(id, 10),
+      od: { esf: parseFloat(od_esf.value||0), cil: parseFloat(od_cil.value||0) },
+      oe: { esf: parseFloat(oe_esf.value||0), cil: parseFloat(oe_cil.value||0) }
+    };
+    try {
+      const resp = await fetch("{{ url_for('api_orcamento_services') }}", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      // obrigatórios
+      list_serv_mand.innerHTML = '';
+      (data.mandatory||[]).forEach(s => {
+        const chip = document.createElement('span'); chip.className='chip';
+        const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+        chip.textContent = s.price ? `${s.name} — R$ ${price}` : `${s.name}`;
+        chip.dataset.price = s.price ?? 0;
+        list_serv_mand.appendChild(chip);
+      });
+      // opcionais
+      sel_serv_add.innerHTML = '';
+      (data.optional||[]).forEach(s => {
+        const o = document.createElement('option');
+        o.value = String(s.id);
+        const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+        o.textContent = `${s.name} — R$ ${price}`;
+        o.dataset.price = s.price ?? 0;
+        sel_serv_add.appendChild(o);
+      });
+      sel_serv_add.disabled = (data.optional||[]).length === 0;
+      state.optionalsSelected = [];
+      updateSummaryAndTotal();
+    } catch(e) { console.error(e); }
+  });
+
+  sel_serv_add.addEventListener('change', () => {
+    const selected = Array.from(sel_serv_add.selectedOptions).map(o => ({
+      id: o.value, name: o.textContent, price: parseFloat(o.dataset.price || '0')
+    }));
+    state.optionalsSelected = selected;
+    updateSummaryAndTotal();
+  });
+
+  function updateSummaryAndTotal() {
+    let parts = [];
+    let total = 0;
+
+    if (state.productSelected) {
+      parts.push(state.productSelected.name);
+      total += parseFloat(state.productSelected.price || 0);
+    }
+    // obrigatórios exibidos (chips)
+    Array.from(list_serv_mand.children).forEach(ch => {
+      const txt = ch.textContent || "";
+      const cut = txt.indexOf(' — ');
+      const name = cut > -1 ? txt.slice(0, cut) : txt;
+      parts.push(name);
+      total += parseFloat(ch.dataset.price || '0');
+    });
+    // opcionais selecionados
+    if (state.optionalsSelected && state.optionalsSelected.length) {
+      state.optionalsSelected.forEach(s => {
+        const dash = s.name.indexOf(' — ');
+        const cleanName = dash > -1 ? s.name.slice(0, dash) : s.name;
+        parts.push(cleanName);
+        total += parseFloat(s.price || 0);
+      });
+    }
+
+    produto_final.value = parts.length ? parts.join(' + ') : '';
+    total_val.textContent = money(total);
+  }
+
+  btn_limpar.addEventListener('click', () => {
+    visao.value = '';
+    [ck_ar, ck_foto, ck_azul].forEach(c => { c.checked = false; c.disabled = true; });
+    [od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo].forEach(i => { i.value = ''; i.disabled = true; });
+    adicao.value = ''; box_adicao.style.display = 'none';
+
+    sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
+    sel_produto.disabled = true;
+    list_serv_mand.innerHTML = '';
+    sel_serv_add.innerHTML = '';
+    sel_serv_add.disabled = true;
+
+    produto_final.value = ''; total_val.textContent = '0,00';
+    state = { products:[], mandatory:[], optional:[], productSelected:null, optionalsSelected:[] };
+  });
+})();
+</script>
+
+{% endblock %}

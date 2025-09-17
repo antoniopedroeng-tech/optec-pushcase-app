@@ -1,35 +1,51 @@
 {% extends "base.html" %}
-{% block title %}Importação em Massa{% endblock %}
 {% block content %}
-<div class="container" style="max-width: 800px; margin: 0 auto;">
-  <h2>Importar planilha (Excel .xlsx)</h2>
-  <p>Use o modelo de planilha com as abas <strong>Suppliers</strong>, <strong>Products</strong> e <strong>Rules</strong>.</p>
-  <p>
-    <a href="https://chat.openai.com" target="_blank">Baixe o template enviado no chat</a> 
-    ou <a href="{{ url_for('admin_import') }}">recarregue esta página</a> após salvar seu arquivo.
-  </p>
-  <form method="post" enctype="multipart/form-data" style="margin-top: 16px;">
-    <input type="file" name="file" accept=".xlsx" required />
-    <button type="submit">Importar</button>
-  </form>
+<h2>Admin → Importar</h2>
 
+<!-- Import existente -->
+<form method="POST" enctype="multipart/form-data" action="{{ url_for('admin_import') }}" style="margin-bottom:16px;">
+  <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="file" accept=".xlsx,.xls" required>
+    <button class="btn">Importar (geral)</button>
+    <a class="btn" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
+  </div>
   {% if report %}
-  <hr/>
-  <h3>Resultado</h3>
-  <ul>
-    <li>Fornecedores: {{ report.suppliers.inserted }} inseridos, {{ report.suppliers.updated }} atualizados</li>
-    <li>Produtos: {{ report.products.inserted }} inseridos, {{ report.products.updated }} atualizados</li>
-    <li>Regras: {{ report.rules.inserted }} inseridos, {{ report.rules.updated }} atualizados</li>
-  </ul>
+  <div class="card" style="margin-top:12px;">
+    <div><strong>Suppliers</strong> — inseridos {{ report.suppliers.inserted }}, atualizados {{ report.suppliers.updated }}</div>
+    <div><strong>Products</strong> — inseridos {{ report.products.inserted }}, atualizados {{ report.products.updated }}</div>
+    <div><strong>Rules</strong> — inseridos {{ report.rules.inserted }}, atualizados {{ report.rules.updated }}</div>
+    {% if report.errors and report.errors|length %}
+      <div style="margin-top:6px; color:#8b0000;">
+        {% for e in report.errors %}<div>• {{ e }}</div>{% endfor %}
+      </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</form>
 
-  {% if report.errors and report.errors|length > 0 %}
-    <h4>Erros</h4>
-    <ul>
-      {% for e in report.errors %}
-        <li style="color:#b00">{{ e }}</li>
-      {% endfor %}
-    </ul>
+<hr style="margin:20px 0">
+
+<!-- NOVA seção: Regras do Orçamento -->
+<h3>Importar Regras do Orçamento</h3>
+<form method="POST" enctype="multipart/form-data" action="{{ url_for('admin_import_orcamento') }}">
+  <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="file_orcamento" accept=".xlsx,.xls" required>
+    <button class="btn" type="submit">Importar regras</button>
+  </div>
+  {% if imp_orcamento %}
+    <div class="card" style="margin-top:12px;">
+      <div><strong>Produtos</strong>: inseridos {{ imp_orcamento.prod_inserted }}, atualizados {{ imp_orcamento.prod_updated }}</div>
+      <div><strong>Serviços obrigatórios</strong>: {{ imp_orcamento.serv_obrig_upserts }}</div>
+      <div><strong>Serviços opcionais</strong>: {{ imp_orcamento.serv_opc_upserts }}</div>
+      <div><strong>Acréscimos</strong>: {{ imp_orcamento.acresc_upserts }}</div>
+      <div class="muted" style="margin-top:6px;">Linhas lidas: {{ imp_orcamento.rows }}</div>
+    </div>
   {% endif %}
-  {% endif %}
-</div>
+</form>
+
+<p class="muted" style="margin-top:8px;">
+  Cabeçalhos esperados (1ª aba): <em>Produto</em>, <em>Código</em>, <em>Valor</em>, <em>Tipo de visão</em> (VS/Progressiva/Bifocal),
+  <em>Antirreflexo</em>, <em>Fotosensível</em>, <em>Filtro azul</em>, <em>ESF mínimo</em>, <em>ESF máximo</em>,
+  <em>CIL mínimo</em>, <em>CIL máximo</em>, <em>Serviços obrigatórios</em>, <em>Serviços disponíveis</em>, <em>Acréscimos</em>.
+</p>
 {% endblock %}
