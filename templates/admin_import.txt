@@ -44,8 +44,8 @@
 </form>
 
 <p class="muted" style="margin-top:8px;">
-  Cabeçalhos esperados (1ª aba): <em>Produto</em>, <em>Código</em>, <em>Valor</em>, <em>Tipo de visão</em> (VS/Progressiva/Bifocal),
+  Cabeçalhos esperados (1ª aba 'PRODUTOS'): <em>Produto</em>, <em>Código</em>, <em>Valor</em>, <em>Tipo de visão</em> (VS/Progressiva/Bifocal),
   <em>Antirreflexo</em>, <em>Fotosensível</em>, <em>Filtro azul</em>, <em>ESF mínimo</em>, <em>ESF máximo</em>,
   <em>CIL mínimo</em>, <em>CIL máximo</em>, <em>Serviços obrigatórios</em>, <em>Serviços disponíveis</em>, <em>Acréscimos</em>.
-</p>
+  — e (2ª aba 'SERVIÇOS'): <em>Código</em>, <em>Descrição</em>, <em>Preço</em>, <em>ESF mínimo</em>, <em>ESF máximo</em>, <em>CIL mínimo</em>, <em>CIL máximo</em>.</p>
 {% endblock %}

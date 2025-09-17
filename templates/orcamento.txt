@@ -62,14 +62,14 @@
           <tr>
             <th>OD</th>
             <td><input id="od_esf" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="od_cil" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="od_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
+            <td><input id="od_cil" class="field" type="text" step="0.25" disabled inputmode="decimal" pattern="-?\d+([\.,]\d{1,2})?"></td>
+            <td><input id="od_eixo" class="field" type="number" step="1" min="0" max="359" disabled inputmode="numeric" pattern="\d{1,3}"></td>
           </tr>
           <tr>
             <th>OE</th>
             <td><input id="oe_esf" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="oe_cil" class="field" type="number" step="0.25" disabled></td>
-            <td><input id="oe_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
+            <td><input id="oe_cil" class="field" type="text" step="0.25" disabled inputmode="decimal" pattern="-?\d+([\.,]\d{1,2})?"></td>
+            <td><input id="oe_eixo" class="field" type="number" step="1" min="0" max="359" disabled inputmode="numeric" pattern="\d{1,3}"></td>
           </tr>
         </tbody>
       </table>
@@ -79,6 +79,14 @@
       <label class="label">Adição</label>
       <input id="adicao" class="field" type="number" step="0.25" min="1.00" max="4.00" placeholder="+1.00 a +4.00">
     </div>
+
+    <div style="margin-top:16px;">
+      <label class="label">Produto final</label>
+      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
+    </div>
+
+    <div class="row" style="margin-top:10px; align-items:center;">
+      <div class="total">Total: R$ <span id="total_val">0,00</span></div>
       <div style="flex:0 0 auto">
         <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
       </div>
@@ -101,17 +109,7 @@
       <label class="label">Serviços adicionais</label>
       <select id="sel_serv_add" class="field" multiple size="5" disabled></select>
       <div class="muted" style="margin-top:6px;">(Selecione um ou mais)</div>
-    
-    <hr style="margin:14px 0;">
-
-
-    <div style="margin-top:16px;">
-      <label class="label">Produto final</label>
-      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
     </div>
-
-    <div class="row" style="margin-top:10px; align-items:center;">
-      <div class="total">Total: R$ <span id="total_val">0,00</span></div></div>
   </div>
 
 </div>
@@ -136,7 +134,34 @@
   const adicao = document.getElementById('adicao');
 
   const sel_produto = document.getElementById('sel_produto');
-  const list_serv_mand = document.getElementById('list_serv_mand');
+  
+
+// ---- Helpers de normalização ----
+function normalizeNumber(str) {
+  if (str == null) return null;
+  let s = String(str).trim().replace(',', '.');
+  if (s === '') return null;
+  let v = Number(s);
+  return Number.isNaN(v) ? null : v;
+}
+function normalizeCil(el) {
+  const v0 = normalizeNumber(el.value);
+  if (v0 == null) return;
+  let v = v0 > 0 ? -v0 : v0;           // força negativo
+  v = Math.round(v * 4) / 4;           // passo 0.25
+  if (Object.is(v, -0)) v = 0;
+  el.value = String(v).replace('.', ','); // mantém vírgula na UI
+}
+function clampEixo(el) {
+  const s = String(el.value ?? '').trim();
+  if (s === '') return;
+  let v = parseInt(s, 10);
+  if (Number.isNaN(v)) return;
+  if (v < 0) v = 0;
+  if (v > 359) v = 359;
+  el.value = String(v);
+}
+const list_serv_mand = document.getElementById('list_serv_mand');
   const sel_serv_add = document.getElementById('sel_serv_add');
 
   const produto_final = document.getElementById('produto_final');
@@ -157,7 +182,18 @@
   }
   visao.addEventListener('change', enableRecipeFields);
 
-  [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
+  
+
+// Normalizações nos campos ao sair/mudar
+;[od_cil, oe_cil].forEach(el => {
+  el.addEventListener('blur', () => normalizeCil(el));
+  el.addEventListener('change', () => normalizeCil(el));
+});
+;[od_eixo, oe_eixo].forEach(el => {
+  el.addEventListener('blur', () => clampEixo(el));
+  el.addEventListener('change', () => clampEixo(el));
+});
+[ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
     el.addEventListener('input', tryFetchOptions);
     el.addEventListener('change', tryFetchOptions);
   });
@@ -170,6 +206,7 @@
   }
 
   async function tryFetchOptions() {
+  normalizeCil(od_cil); normalizeCil(oe_cil); clampEixo(od_eixo); clampEixo(oe_eixo);
     if (!visao.value) return;
     if (!recipeIsFilled()) {
       sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
