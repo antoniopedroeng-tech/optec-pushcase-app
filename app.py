@@ -1215,11 +1215,14 @@ def admin_import_orcamento():
         return s in ("1","true","t","x","sim","s","yes","y")
 
     def as_dec(v, default="0"):
-        try:
-            if v in (None, ""): return D(default)
-            return D(str(v).replace(",", ".").strip())
-        except Exception:
-            return D(default)
+    # Retorna Decimal, ou None se default=None e valor vazio/ inválido
+    if v in (None, ""):
+        return None if default is None else D(str(default))
+    s = str(v).strip().replace(",", ".")
+    try:
+        return D(s)
+    except Exception:
+        return None if default is None else D(str(default))
 
     def parse_visao(v):
         s = norm(v).lower()
