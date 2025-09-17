@@ -194,7 +194,7 @@ function clampEixo(el){
   }
 
   async function tryFetchOptions() {
-  normalizeCylinder(od_cil); normalizeCylinder(oe_cil); clampEixo(od_eixo); clampEixo(oe_eixo);
+  clampEixo(od_eixo); clampEixo(oe_eixo);
     if (!visao.value) return;
     if (!recipeIsFilled()) {
       sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
@@ -210,8 +210,8 @@ function clampEixo(el){
     const payload = {
       visao: visao.value,
       flags: { ar: ck_ar.checked, foto: ck_foto.checked, azul: ck_azul.checked },
-      od: { esf: parseFloat(od_esf.value||0), cil: parseFloat(od_cil.value||0), eixo: parseInt(od_eixo.value||0) },
-      oe: { esf: parseFloat(oe_esf.value||0), cil: parseFloat(oe_cil.value||0), eixo: parseInt(oe_eixo.value||0) },
+      od: { esf: toNumberPt(od_esf.value||0), cil: toNumberPt(od_cil.value||0), eixo: parseInt(od_eixo.value||0) },
+      oe: { esf: toNumberPt(oe_esf.value||0), cil: toNumberPt(oe_cil.value||0), eixo: parseInt(oe_eixo.value||0) },
       adicao: adicao.value ? parseFloat(adicao.value) : null
     };
 
@@ -257,8 +257,8 @@ function clampEixo(el){
 
     const payload = {
       product_id: parseInt(id, 10),
-      od: { esf: parseFloat(od_esf.value||0), cil: parseFloat(od_cil.value||0) },
-      oe: { esf: parseFloat(oe_esf.value||0), cil: parseFloat(oe_cil.value||0) }
+      od: { esf: toNumberPt(od_esf.value||0), cil: toNumberPt(od_cil.value||0) },
+      oe: { esf: toNumberPt(oe_esf.value||0), cil: toNumberPt(oe_cil.value||0) }
     };
     try {
       const resp = await fetch("{{ url_for('api_orcamento_services') }}", {
