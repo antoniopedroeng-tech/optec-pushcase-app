@@ -670,47 +670,6 @@ def api_orcamento_services():
             mandatory.append({"id": a["serv_code"], "name": a["name"], "price": float(a["price"])})
 
     optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
-
-# --- Acréscimos que viram indispensáveis quando faixa de ESF/CIL é atendida ---
-from math import isfinite
-
-def _rng_ok(v, lo, hi):
-    # Se ambos None: não restringe. Se apenas um existir, usa o próprio valor como outro limite.
-    if lo is None and hi is None:
-        return True
-    v = float(v)
-    lo = float(lo) if lo is not None else v
-    hi = float(hi) if hi is not None else v
-    if lo > hi:
-        lo, hi = hi, lo
-    return v >= lo and v <= hi
-
-def _eye_ok(esf, cil, row):
-    return _rng_ok(esf, row.get("esf_min"), row.get("esf_max")) and _rng_ok(cil, row.get("cil_min"), row.get("cil_max"))
-
-# obrigatórios pré-existentes
-mandatory_ob = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
-
-# acréscimos condicionais que atendem OD ou OE
-add_from_ac = []
-for r in ac:
-    if _eye_ok(od_esf, od_cil, r) or _eye_ok(oe_esf, oe_cil, r):
-        add_from_ac.append({"id": r["serv_code"], "name": r["name"], "price": float(r["price"])})
-
-# dedupe por código: obrigatórios primeiro, depois acréscimos válidos
-seen = set(); mandatory = []
-for lst in (mandatory_ob, add_from_ac):
-    for item in lst:
-        cid = str(item["id"])
-        if cid in seen: 
-            continue
-        seen.add(cid)
-        mandatory.append(item)
-
-# opcionais permanecem os mesmos
-optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
-
-
     return {"mandatory": mandatory, "optional": optional}
 # ================== fim das APIs de Orçamento ==================
 
