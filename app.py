@@ -565,6 +565,113 @@ def index():
         {% endblock %}
         """, app_name=APP_NAME)
 
+# ==================== APIs da tela Orçamento ====================
+from decimal import Decimal
+from sqlalchemy import text
+from flask import request
+
+def _dec(v, default="0"):
+    try:
+        if v in (None, ""): return Decimal(default)
+        return Decimal(str(v).replace(",", "."))
+    except Exception:
+        return Decimal(default)
+
+@app.post("/api/orcamento/options")
+def api_orcamento_options():
+    # permite admin, comprador, pagador e cliente
+    ret = require_role("admin", "comprador", "pagador", "cliente")
+    if ret:
+        return ret
+
+    data = request.get_json(force=True) or {}
+    visao = (data.get("visao") or "").strip()
+    flags = data.get("flags") or {}
+    ar   = bool(flags.get("ar"))
+    foto = bool(flags.get("foto"))
+    azul = bool(flags.get("azul"))
+
+    od = data.get("od") or {}; oe = data.get("oe") or {}
+    od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
+    oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
+
+    q = text("""
+      SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
+      FROM orc_produto
+      WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
+    """)
+
+    def inrng(v, a, b):
+        lo = min(Decimal(a), Decimal(b)); hi = max(Decimal(a), Decimal(b))
+        return Decimal(v) >= lo and Decimal(v) <= hi
+
+    products = []
+    with engine.begin() as conn:
+        for r in conn.execute(q, {"visao":visao,"ar":ar,"foto":foto,"azul":azul}).mappings():
+            ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
+            ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
+            if ok_od and ok_oe:
+                products.append({"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)})
+
+    return {"products": products}
+
+@app.post("/api/orcamento/services")
+def api_orcamento_services():
+    ret = require_role("admin","comprador","pagador","cliente")
+    if ret:
+        return ret
+
+    data = request.get_json(force=True) or {}
+    pid = int(data.get("product_id"))
+
+    od = data.get("od") or {}; oe = data.get("oe") or {}
+    od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
+    oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
+
+    with engine.begin() as conn:
+        ob = conn.execute(text("""
+          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_serv_obrig o
+          JOIN orc_servico_catalogo c ON c.code=o.serv_code
+          WHERE o.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+        op = conn.execute(text("""
+          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_serv_opc o
+          JOIN orc_servico_catalogo c ON c.code=o.serv_code
+          WHERE o.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+        ac = conn.execute(text("""
+          SELECT a.serv_code, a.esf_min, a.esf_max, a.cil_min, a.cil_max,
+                 COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_acrescimo a
+          JOIN orc_servico_catalogo c ON c.code=a.serv_code
+          WHERE a.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+    def within(v, a, b):
+        if a is None and b is None: return False
+        a = Decimal(a) if a is not None else Decimal(v)
+        b = Decimal(b) if b is not None else Decimal(v)
+        lo = min(a,b); hi = max(a,b)
+        return Decimal(v) >= lo and Decimal(v) <= hi
+
+    mandatory = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
+
+    for a in ac:
+        trig_od = within(od_esf, a["esf_min"], a["esf_max"]) and within(od_cil, a["cil_min"], a["cil_max"])
+        trig_oe = within(oe_esf, a["esf_min"], a["esf_max"]) and within(oe_cil, a["cil_min"], a["cil_max"])
+        if trig_od or trig_oe:
+            mandatory.append({"id": a["serv_code"], "name": a["name"], "price": float(a["price"])})
+
+    optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
+    return {"mandatory": mandatory, "optional": optional}
+# ================== fim das APIs de Orçamento ==================
+
+
+
 # -------- Admin: Usuários --------
 
 @app.route("/admin/users")
