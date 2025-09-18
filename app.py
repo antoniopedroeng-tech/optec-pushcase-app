@@ -658,25 +658,19 @@ def api_orcamento_services():
         """), {"pid": pid}).mappings().all()
 
     def within(v, a, b):
-            # Requer limites presentes; comparação inclusiva
-            if a is None or b is None:
-                return False
-            a = Decimal(a)
-            b = Decimal(b)
-            lo = min(a, b); hi = max(a, b)
-            return Decimal(v) >= lo and Decimal(v) <= hi
+        if a is None and b is None: return False
+        a = Decimal(a) if a is not None else Decimal(v)
+        b = Decimal(b) if b is not None else Decimal(v)
+        lo = min(a,b); hi = max(a,b)
+        return Decimal(v) >= lo and Decimal(v) <= hi
 
-    mandatory = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
+    mandatory = [{"id": r["name"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
 
     for a in ac:
-        esf_od_ok = within(od_esf, a["esf_min"], a["esf_max"])
-        cil_od_ok = within(od_cil, a["cil_min"], a["cil_max"])
-        esf_oe_ok = within(oe_esf, a["esf_min"], a["esf_max"])
-        cil_oe_ok = within(oe_cil, a["cil_min"], a["cil_max"])
-        trig_od = (esf_od_ok or cil_od_ok)
-        trig_oe = (esf_oe_ok or cil_oe_ok)
+        trig_od = within(od_esf, a["esf_min"], a["esf_max"]) and within(od_cil, a["cil_min"], a["cil_max"])
+        trig_oe = within(oe_esf, a["esf_min"], a["esf_max"]) and within(oe_cil, a["cil_min"], a["cil_max"])
         if trig_od or trig_oe:
-            mandatory.append({"id": a["serv_code"], "name": a["name"], "price": float(a["price"])})
+        mandatory.append({"id": a["name"], "code": a["serv_code"], "name": a["name"], "price": float(a["price"])})
 
     optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
     return {"mandatory": mandatory, "optional": optional}
@@ -1255,50 +1249,6 @@ def admin_import_orcamento():
     try:
         wb = load_workbook(filename=file, data_only=True)
         ws = wb.worksheets[0]
-        # ===== NOVO: Ler aba 'Acréscimos' e mapear por código =====
-        acc_rows_by_code = {}
-        acc_sheet = None
-        for name in wb.sheetnames:
-            if str(name).strip().lower() in ("acréscimos","acrescimos","acréscimo","acrescimo"):
-                acc_sheet = wb[name]
-                break
-        if acc_sheet:
-            headers_acc = [str(c.value).strip().lower() if c.value is not None else "" for c in next(acc_sheet.iter_rows(min_row=1, max_row=1, values_only=False))]
-            def idx_acc(col):
-                col = col.lower()
-                return headers_acc.index(col) if col in headers_acc else -1
-
-            ia_desc  = idx_acc("acréscimos") if "acréscimos" in headers_acc else idx_acc("acrescimos")
-            ia_code  = idx_acc("código") if "código" in headers_acc else idx_acc("codigo")
-            ia_valor = idx_acc("valor")
-            ia_esfmi = idx_acc("esf mínimo") if "esf mínimo" in headers_acc else idx_acc("esf minimo")
-            ia_esfma = idx_acc("esf máximo") if "esf máximo" in headers_acc else idx_acc("esf maximo")
-            ia_cilmi = idx_acc("cil mínimo") if "cil mínimo" in headers_acc else idx_acc("cil minimo")
-            ia_cilma = idx_acc("cil máximo") if "cil máximo" in headers_acc else idx_acc("cil maximo")
-
-            from decimal import Decimal
-            def _to_dec_local(v):
-                if v is None: return None
-                s = str(v).strip().replace("R$","").replace("r$","").replace(",",".")
-                try: return Decimal(s)
-                except: return None
-
-            for row in acc_sheet.iter_rows(min_row=2, values_only=True):
-                if row is None: continue
-                code_ac = (str(row[ia_code]).strip().upper() if (ia_code!=-1 and row[ia_code] is not None) else "")
-                if not code_ac: continue
-                desc = (str(row[ia_desc]).strip() if (ia_desc!=-1 and row[ia_desc] is not None) else "")
-                val  = _to_dec_local(row[ia_valor]) if ia_valor!=-1 else None
-                esfmin = _to_dec_local(row[ia_esfmi]) if ia_esfmi!=-1 else None
-                esfmax = _to_dec_local(row[ia_esfma]) if ia_esfma!=-1 else None
-                cilmin = _to_dec_local(row[ia_cilmi]) if ia_cilmi!=-1 else None
-                cilmax = _to_dec_local(row[ia_cilma]) if ia_cilma!=-1 else None
-
-                acc_rows_by_code.setdefault(code_ac, []).append({
-                    "code": code_ac, "desc": desc, "price": val,
-                    "esf_min": esfmin, "esf_max": esfmax, "cil_min": cilmin, "cil_max": cilmax
-                })
-
     except Exception as e:
         flash(f"Erro ao ler Excel: {e}", "error")
         return redirect(url_for('admin_import'))
@@ -1397,43 +1347,16 @@ def admin_import_orcamento():
                 serv_opc_upserts += 1
 
             if idx_acresc:
-                # Lista de códigos declarados na coluna 'Acréscimos' do PRODUTO
-                raw_codes = ws.cell(i, idx_acresc).value
-                import re as _re
-                codes_list = []
-                if raw_codes:
-                    for p in _re.split(r"[.;,]\s*", str(raw_codes).strip()):
-                        p = p.strip()
-                        if p:
-                            codes_list.append(p.upper())
-
-                if 'acc_rows_by_code' in locals() and acc_rows_by_code:
-                    for code_ac in codes_list:
-                        rows_for_code = acc_rows_by_code.get(code_ac, [])
-                        for r_acc in rows_for_code:
-                            conn.execute(text("""
-                              INSERT INTO orc_servico_catalogo (code, description, price)
-                              VALUES (:c, :d, COALESCE(:p,0))
-                              ON CONFLICT (code) DO UPDATE SET description=EXCLUDED.description, price=EXCLUDED.price
-                            """), {"c": code_ac, "d": r_acc.get("desc") or code_ac, "p": float(r_acc.get("price") or 0)})
-                            conn.execute(text("""
-                              INSERT INTO orc_produto_acrescimo (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max)
-                              VALUES (:pid,:sc,:esfmin,:esfmax,:cilmin,:cilmax)
-                              ON CONFLICT (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max) DO NOTHING
-                            """), {"pid": pid, "sc": code_ac,
-                                    "esfmin": r_acc.get("esf_min"), "esfmax": r_acc.get("esf_max"),
-                                    "cilmin": r_acc.get("cil_min"), "cilmax": r_acc.get("cil_max")})
-                            acresc_upserts += 1
-                else:
-                    for code_ac, esf_min, esf_max, cil_min, cil_max in _parse_acresc(ws.cell(i, idx_acresc).value):
-                        conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"), {"c": code_ac})
-                        conn.execute(text("""
-                          INSERT INTO orc_produto_acrescimo (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max)
-                          VALUES (:pid,:sc,:esfmin,:esfmax,:cilmin,:cilmax)
-                          ON CONFLICT (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max) DO NOTHING
-                        """), {"pid":pid,"sc":code_ac,
-                                 "esfmin":esf_min,"esfmax":esf_max,"cilmin":cil_min,"cilmax":cil_max})
-                        acresc_upserts += 1
+                for code_ac, esf_min, esf_max, cil_min, cil_max in _parse_acresc(ws.cell(i, idx_acresc).value):
+                    conn.execute(text("INSERT INTO orc_servico_catalogo (code) VALUES (:c) ON CONFLICT DO NOTHING"),
+                                 {"c": code_ac})
+                    conn.execute(text("""
+                      INSERT INTO orc_produto_acrescimo (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max)
+                      VALUES (:pid,:sc,:esfmin,:esfmax,:cilmin,:cilmax)
+                      ON CONFLICT (produto_id, serv_code, esf_min, esf_max, cil_min, cil_max) DO NOTHING
+                    """), {"pid":pid,"sc":code_ac,
+                             "esfmin":esf_min,"esfmax":esf_max,"cilmin":cil_min,"cilmax":cil_max})
+                    acresc_upserts += 1
 
     session['imp_orcamento'] = {
         "prod_inserted": prod_ins, "prod_updated": prod_upd,
