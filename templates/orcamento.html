@@ -80,7 +80,6 @@
       <input id="adicao" class="field" type="number" step="0.25" min="1.00" max="4.00" placeholder="+1.00 a +4.00">
     </div>
 
-    </div>
   </div>
 
   <!-- DIREITA -->
@@ -100,17 +99,18 @@
       <select id="sel_serv_add" class="field" multiple size="5" disabled></select>
       <div class="muted" style="margin-top:6px;">(Selecione um ou mais)</div>
     </div>
-<div style="margin-top:16px;">
+
+    <div style="margin-top:16px;">
       <label class="label">Produto final</label>
       <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
     </div>
 
-    <div class="row" style="margin-top:10px; align-items:center;">
+    <div class="row" style="margin-top:10px; align-items:center; justify-content:space-between;">
       <div class="total">Total: R$ <span id="total_val">0,00</span></div>
       <div style="flex:0 0 auto">
         <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
       </div>
-    
+    </div>
   </div>
 
 </div>
@@ -136,26 +136,26 @@
 
   const sel_produto = document.getElementById('sel_produto');
 
-// Helpers p/ cilíndrico com vírgula (faixa -10..0, passo 0.25)
-function toNumberPt(v){ if(v==null) return null; v=String(v).trim().replace(',', '.'); if(v==='') return null; const n=Number(v); return Number.isNaN(n)?null:n; }
-function normalizeCylinder(el){
-  const n0 = toNumberPt(el.value);
-  if(n0==null){ el.value=''; return; }
-  let n = n0;
-  if(n>0) n = -n;           // força negativo (exceto 0)
-  if(n < -10) n = -10;
-  if(n > 0) n = 0;
-  n = Math.round(n*4)/4;    // passo 0.25
-  if(Object.is(n,-0)) n = 0;
-  el.value = String(n).replace('.', ',');
-}
-function clampEixo(el){
-  let v = parseInt((el.value||'0'),10);
-  if(Number.isNaN(v)) v = 0;
-  if(v<0) v = 0;
-  if(v>359) v = 359;
-  el.value = String(v);
-}
+  // Helpers p/ cilíndrico com vírgula (faixa -10..0, passo 0.25)
+  function toNumberPt(v){ if(v==null) return null; v=String(v).trim().replace(',', '.'); if(v==='') return null; const n=Number(v); return Number.isNaN(n)?null:n; }
+  function normalizeCylinder(el){
+    const n0 = toNumberPt(el.value);
+    if(n0==null){ el.value=''; return; }
+    let n = n0;
+    if(n>0) n = -n;           // força negativo (exceto 0)
+    if(n < -10) n = -10;
+    if(n > 0) n = 0;
+    n = Math.round(n*4)/4;    // passo 0.25
+    if(Object.is(n,-0)) n = 0;
+    el.value = String(n).replace('.', ',');
+  }
+  function clampEixo(el){
+    let v = parseInt((el.value||'0'),10);
+    if(Number.isNaN(v)) v = 0;
+    if(v<0) v = 0;
+    if(v>359) v = 359;
+    el.value = String(v);
+  }
 
   const list_serv_mand = document.getElementById('list_serv_mand');
   const sel_serv_add = document.getElementById('sel_serv_add');
@@ -181,7 +181,6 @@ function clampEixo(el){
   ;[od_cil, oe_cil].forEach(el=>{ el.addEventListener('blur', ()=>normalizeCylinder(el)); el.addEventListener('change', ()=>normalizeCylinder(el)); });
   ;[od_eixo, oe_eixo].forEach(el=>{ el.addEventListener('blur', ()=>clampEixo(el)); el.addEventListener('change', ()=>clampEixo(el)); });
 
-
   [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
     el.addEventListener('input', tryFetchOptions);
     el.addEventListener('change', tryFetchOptions);
@@ -195,7 +194,7 @@ function clampEixo(el){
   }
 
   async function tryFetchOptions() {
-  clampEixo(od_eixo); clampEixo(oe_eixo);
+    clampEixo(od_eixo); clampEixo(oe_eixo);
     if (!visao.value) return;
     if (!recipeIsFilled()) {
       sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
@@ -279,7 +278,8 @@ function clampEixo(el){
       (data.mandatory||[]).forEach(s => {
         const chip = document.createElement('span'); chip.className='chip';
         const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        chip.textContent = s.price ? `${s.display} — R$ ${price}` : `${s.display}`;
+        const display = s.display || s.description || s.desc || s.name || s.id;
+        chip.textContent = s.price ? `${display} — R$ ${price}` : `${display}`;
         chip.dataset.price = s.price ?? 0;
         list_serv_mand.appendChild(chip);
       });
@@ -289,8 +289,9 @@ function clampEixo(el){
         const o = document.createElement('option');
         o.value = String(s.id);
         const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        o.textContent = `${s.display} — R$ ${price}`;
-        o.dataset.display = s.display;
+        const display = s.display || s.description || s.desc || s.name || s.id;
+        o.textContent = `${display} — R$ ${price}`;
+        o.dataset.display = display;
         o.dataset.price = s.price ?? 0;
         sel_serv_add.appendChild(o);
       });
