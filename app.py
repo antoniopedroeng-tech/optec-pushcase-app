@@ -657,15 +657,15 @@ def api_orcamento_services():
           WHERE a.produto_id=:pid
         """), {"pid": pid}).mappings().all()
 
-def within(v, a, b):
-        # Requer limites presentes; comparação inclusiva
-        if a is None or b is None:
-            return False
-        a = Decimal(a)
-        b = Decimal(b)
-        lo = min(a, b); hi = max(a, b)
-        return Decimal(v) >= lo and Decimal(v) <= hi
-
+    def within(v, a, b):
+            # Requer limites presentes; comparação inclusiva
+            if a is None or b is None:
+                return False
+            a = Decimal(a)
+            b = Decimal(b)
+            lo = min(a, b); hi = max(a, b)
+            return Decimal(v) >= lo and Decimal(v) <= hi
+    
 
     mandatory = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
 
