@@ -80,16 +80,6 @@
       <input id="adicao" class="field" type="number" step="0.25" min="1.00" max="4.00" placeholder="+1.00 a +4.00">
     </div>
 
-    <div style="margin-top:16px;">
-      <label class="label">Produto final</label>
-      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
-    </div>
-
-    <div class="row" style="margin-top:10px; align-items:center;">
-      <div class="total">Total: R$ <span id="total_val">0,00</span></div>
-      <div style="flex:0 0 auto">
-        <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
-      </div>
     </div>
   </div>
 
@@ -110,6 +100,17 @@
       <select id="sel_serv_add" class="field" multiple size="5" disabled></select>
       <div class="muted" style="margin-top:6px;">(Selecione um ou mais)</div>
     </div>
+<div style="margin-top:16px;">
+      <label class="label">Produto final</label>
+      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
+    </div>
+
+    <div class="row" style="margin-top:10px; align-items:center;">
+      <div class="total">Total: R$ <span id="total_val">0,00</span></div>
+      <div style="flex:0 0 auto">
+        <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
+      </div>
+    
   </div>
 
 </div>
@@ -224,8 +225,14 @@ function clampEixo(el){
       const data = await resp.json();
 
       state.products = data.products || [];
-      state.mandatory = data.mandatory || [];
-      state.optional = data.optional || [];
+      state.mandatory = (data.mandatory || []).map(s => ({
+        ...s,
+        display: s.display || s.description || s.desc || s.name || s.id
+      }));
+      state.optional = (data.optional || []).map(s => ({
+        ...s,
+        display: s.display || s.description || s.desc || s.name || s.id
+      }));
       state.productSelected = null;
       state.optionalsSelected = [];
 
@@ -272,8 +279,7 @@ function clampEixo(el){
       (data.mandatory||[]).forEach(s => {
         const chip = document.createElement('span'); chip.className='chip';
         const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const _display = s.display || s.description || s.desc || s.name || s.id;
-        chip.textContent = s.price ? `${_display} — R$ ${price}` : `${_display}`;
+        chip.textContent = s.price ? `${s.display} — R$ ${price}` : `${s.display}`;
         chip.dataset.price = s.price ?? 0;
         list_serv_mand.appendChild(chip);
       });
@@ -283,9 +289,8 @@ function clampEixo(el){
         const o = document.createElement('option');
         o.value = String(s.id);
         const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const _display = s.display || s.description || s.desc || s.name || s.id;
-        o.textContent = `${_display} — R$ ${price}`;
-        o.dataset.display = _display;
+        o.textContent = `${s.display} — R$ ${price}`;
+        o.dataset.display = s.display;
         o.dataset.price = s.price ?? 0;
         sel_serv_add.appendChild(o);
       });
@@ -324,8 +329,8 @@ function clampEixo(el){
     // opcionais selecionados
     if (state.optionalsSelected && state.optionalsSelected.length) {
       state.optionalsSelected.forEach(s => {
-        const dash = s.name.indexOf(' — ');
-        const cleanName = dash > -1 ? s.name.slice(0, dash) : s.name;
+        const dash = (s.display||s.name).indexOf(' — ');
+        const cleanName = dash > -1 ? (s.display||s.name).slice(0, dash) : (s.display||s.name);
         parts.push(cleanName);
         total += parseFloat(s.price || 0);
       });
