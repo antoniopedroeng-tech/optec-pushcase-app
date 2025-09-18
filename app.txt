@@ -605,12 +605,15 @@ def api_orcamento_options():
     """)
 
     def inrng(v, a, b):
-        lo = min(Decimal(a), Decimal(b)); hi = max(Decimal(a), Decimal(b))
+        a = Decimal(a); b = Decimal(b)
+        if a == 0 and b == 0:
+            return True
+        lo = min(a,b); hi = max(a,b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
     products = []
     with engine.begin() as conn:
-        for r in conn.execute(q, {"visao": visao, "ar": ar_i, "foto": foto_i, "azul": azul_i}).mappings():
+        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
             ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
             ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
             if ok_od and ok_oe:
