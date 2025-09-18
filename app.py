@@ -697,7 +697,7 @@ def admin_users_create():
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
     role = request.form.get("role") or "comprador"
-    if not username or not password or role not in ("admin","comprador","pagador"):
+    if not username or not password or (role not in ("admin","comprador","pagador","cliente")):
         flash("Dados inválidos.", "error"); return redirect(url_for("admin_users"))
     from werkzeug.security import generate_password_hash
     try:
