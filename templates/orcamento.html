@@ -279,8 +279,7 @@ function clampEixo(el){
       (data.mandatory||[]).forEach(s => {
         const chip = document.createElement('span'); chip.className='chip';
         const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const _disp = s.display || s.description || s.desc || s.name || s.id;
-        chip.textContent = s.price ? `${_disp} — R$ ${price}` : `${_disp}`;
+        chip.textContent = s.price ? `${s.display} — R$ ${price}` : `${s.display}`;
         chip.dataset.price = s.price ?? 0;
         list_serv_mand.appendChild(chip);
       });
@@ -290,9 +289,7 @@ function clampEixo(el){
         const o = document.createElement('option');
         o.value = String(s.id);
         const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const _disp = s.display || s.description || s.desc || s.name || s.id;
-        o.textContent = `${_disp} — R$ ${price}`;
-        o.dataset.display = _disp;
+        o.textContent = `${s.display} — R$ ${price}`;
         o.dataset.display = s.display;
         o.dataset.price = s.price ?? 0;
         sel_serv_add.appendChild(o);
@@ -306,7 +303,7 @@ function clampEixo(el){
   sel_serv_add.addEventListener('change', () => {
     const selected = Array.from(sel_serv_add.selectedOptions).map(o => ({
       id: o.value,
-      name: (o.dataset.display || o.textContent),
+      name: o.dataset.display || o.textContent,
       price: parseFloat(o.dataset.price || '0')
     }));
     state.optionalsSelected = selected;
