@@ -664,15 +664,18 @@ def api_orcamento_services():
         lo = min(a,b); hi = max(a,b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
-    mandatory = [{"id": r["name"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
+    mandatory = [{"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"])} for r in ob]
 
     for a in ac:
-        trig_od = within(od_esf, a["esf_min"], a["esf_max"]) and within(od_cil, a["cil_min"], a["cil_max"])
-        trig_oe = within(oe_esf, a["esf_min"], a["esf_max"]) and within(oe_cil, a["cil_min"], a["cil_max"])
+        esf_od_ok = within(od_esf, a["esf_min"], a["esf_max"])
+        cil_od_ok = within(od_cil, a["cil_min"], a["cil_max"])
+        esf_oe_ok = within(oe_esf, a["esf_min"], a["esf_max"])
+        cil_oe_ok = within(oe_cil, a["cil_min"], a["cil_max"])
+        trig_od = (esf_od_ok or cil_od_ok)
+        trig_oe = (esf_oe_ok or cil_oe_ok)
         if trig_od or trig_oe:
-        mandatory.append({"id": a["name"], "code": a["serv_code"], "name": a["name"], "price": float(a["price"])})
-
-    optional = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in op]
+            mandatory.append({"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "display": a["name"], "price": float(a["price"])})
+    optional = [{"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"])} for r in op]
     return {"mandatory": mandatory, "optional": optional}
 # ================== fim das APIs de Orçamento ==================
 
