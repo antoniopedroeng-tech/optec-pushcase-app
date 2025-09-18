@@ -665,7 +665,6 @@ def api_orcamento_services():
             b = Decimal(b)
             lo = min(a, b); hi = max(a, b)
             return Decimal(v) >= lo and Decimal(v) <= hi
-    
 
     mandatory = [{"id": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob]
 
@@ -1256,7 +1255,6 @@ def admin_import_orcamento():
     try:
         wb = load_workbook(filename=file, data_only=True)
         ws = wb.worksheets[0]
-
         # ===== NOVO: Ler aba 'Acréscimos' e mapear por código =====
         acc_rows_by_code = {}
         acc_sheet = None
@@ -1436,7 +1434,6 @@ def admin_import_orcamento():
                         """), {"pid":pid,"sc":code_ac,
                                  "esfmin":esf_min,"esfmax":esf_max,"cilmin":cil_min,"cilmax":cil_max})
                         acresc_upserts += 1
-
 
     session['imp_orcamento'] = {
         "prod_inserted": prod_ins, "prod_updated": prod_upd,
