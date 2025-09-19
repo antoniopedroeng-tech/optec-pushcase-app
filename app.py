@@ -692,14 +692,48 @@ def admin_users():
 
 @app.route("/admin/users/create", methods=["POST"])
 def admin_users_create():
+    # Somente admin pode criar
     ret = require_role("admin")
-    if ret: return ret
+    if ret:
+        return ret
+
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
     role = request.form.get("role") or "comprador"
+
+    # validações básicas
     if not username or not password or (role not in ("admin","comprador","pagador","cliente")):
-        flash("Dados inválidos.", "error"); return redirect(url_for("admin_users"))
+        flash("Dados inválidos.", "error")
+        return redirect(url_for("admin_users"))
+
+    # pré-checagem: já existe? (case-insensitive)
+    exists = db_one("SELECT 1 FROM users WHERE LOWER(username)=LOWER(:u)", u=username)
+    if exists:
+        flash("Usuário já existe.", "error")
+        return redirect(url_for("admin_users"))
+
     from werkzeug.security import generate_password_hash
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        db_exec(
+            "INSERT INTO users (username, password_hash, role, created_at) "
+            "VALUES (:u,:p,:r,:c)",
+            u=username,
+            p=generate_password_hash(password),
+            r=role,
+            c=datetime.utcnow()
+        )
+        audit("user_create", f"{username}/{role}")
+        flash("Usuário criado.", "success")
+    except IntegrityError as e:
+        # Mensagem específica para violação de único
+        flash("Usuário já existe.", "error")
+    except Exception as e:
+        # Demais erros: mostrar algo útil
+        flash(f"Erro ao criar usuário: {e}", "error")
+
+    return redirect(url_for("admin_users"))from werkzeug.security import generate_password_hash
     try:
         db_exec("INSERT INTO users (username, password_hash, role, created_at) VALUES (:u,:p,:r,:c)",
                 u=username, p=generate_password_hash(password), r=role, c=datetime.utcnow())
