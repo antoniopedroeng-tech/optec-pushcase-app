@@ -712,6 +712,7 @@ def admin_users_create():
         flash("Usuário já existe.", "error")
         return redirect(url_for("admin_users"))
 
+    # imports ficam em linhas separadas (evita colar errado)
     from werkzeug.security import generate_password_hash
     from sqlalchemy.exc import IntegrityError
 
@@ -726,22 +727,12 @@ def admin_users_create():
         )
         audit("user_create", f"{username}/{role}")
         flash("Usuário criado.", "success")
-    except IntegrityError as e:
-        # Mensagem específica para violação de único
+    except IntegrityError:
         flash("Usuário já existe.", "error")
     except Exception as e:
-        # Demais erros: mostrar algo útil
         flash(f"Erro ao criar usuário: {e}", "error")
 
-    return redirect(url_for("admin_users"))from werkzeug.security import generate_password_hash
-    try:
-        db_exec("INSERT INTO users (username, password_hash, role, created_at) VALUES (:u,:p,:r,:c)",
-                u=username, p=generate_password_hash(password), r=role, c=datetime.utcnow())
-        audit("user_create", f"{username}/{role}"); flash("Usuário criado.", "success")
-    except Exception:
-        flash("Usuário já existe.", "error")
     return redirect(url_for("admin_users"))
-
 @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
 def admin_users_delete(uid):
     ret = require_role("admin")
