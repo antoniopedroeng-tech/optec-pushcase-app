@@ -712,7 +712,6 @@ def admin_users_create():
         flash("Usuário já existe.", "error")
         return redirect(url_for("admin_users"))
 
-    # imports ficam em linhas separadas (evita colar errado)
     from werkzeug.security import generate_password_hash
     from sqlalchemy.exc import IntegrityError
 
@@ -727,12 +726,21 @@ def admin_users_create():
         )
         audit("user_create", f"{username}/{role}")
         flash("Usuário criado.", "success")
-    except IntegrityError:
-        flash("Usuário já existe.", "error")
+    except IntegrityError as e:
+        try:
+            code = getattr(getattr(e, 'orig', None), 'pgcode', None)
+            if code == '23505':
+                flash("Usuário já existe.", "error")
+            else:
+                flash(f"Erro no banco (IntegrityError): {e}", "error")
+        except Exception:
+            flash("Usuário já existe.", "error")
     except Exception as e:
         flash(f"Erro ao criar usuário: {e}", "error")
 
     return redirect(url_for("admin_users"))
+
+
 @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
 def admin_users_delete(uid):
     ret = require_role("admin")
