@@ -40,8 +40,8 @@ def _in_range(v, a, b):
     if lo > hi: lo, hi = hi, lo
     return Decimal(v) >= lo and Decimal(v) <= hi
 
-@app.post("/api/orcamento/options")
-def api_orcamento_options():
+@app.post("/api/orcamento/options", endpoint="api_orcamento_options_v2")
+def api_orcamento_options_v2():
     # Ajuste os perfis conforme sua regra
     ret = require_role("admin","comprador","pagador","cliente")
     if ret:
@@ -93,8 +93,8 @@ def api_orcamento_options():
     return jsonify(resp)
 
 
-@app.post("/api/orcamento/services")
-def api_orcamento_services():
+@app.post("/api/orcamento/services", endpoint="api_orcamento_services_v2")
+def api_orcamento_services_v2():
     ret = require_role("admin","comprador","pagador","cliente")
     if ret:
         return ret
@@ -714,8 +714,8 @@ def _dec(v, default="0"):
     except Exception:
         return Decimal(default)
 
-@app.post("/api/orcamento/options")
-def api_orcamento_options():
+@app.post("/api/orcamento/options", endpoint="api_orcamento_options_v2")
+def api_orcamento_options_v2():
     # permite admin, comprador, pagador e cliente
     ret = require_role("admin", "comprador", "pagador", "cliente")
     if ret:
@@ -758,8 +758,8 @@ def api_orcamento_options():
 
     return {"products": products}
 
-@app.post("/api/orcamento/services")
-def api_orcamento_services():
+@app.post("/api/orcamento/services", endpoint="api_orcamento_services_v2")
+def api_orcamento_services_v2():
     ret = require_role("admin","comprador","pagador","cliente")
     if ret:
         return ret
