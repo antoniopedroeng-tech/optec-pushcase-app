@@ -127,7 +127,7 @@ btn.addEventListener('click', tryFetchOptions);
 
 async function tryFetchOptions(){
   const payload = montarPayloadOrcamento();
-  const resp = await fetch("{{ url_for('api_orcamento_options') }}", {
+  const resp = await fetch("{{ url_for('api_orcamento_options_v3') }}", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(payload)
@@ -182,7 +182,7 @@ async function tryFetchOptions(){
 }
 
 async function loadServicesSingle(productId){
-  const resp = await fetch("{{ url_for('api_orcamento_services') }}", {
+  const resp = await fetch("{{ url_for('api_orcamento_services_v3') }}", {
     method:"POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ product_id: parseInt(productId,10) })
@@ -191,7 +191,7 @@ async function loadServicesSingle(productId){
 }
 
 async function loadServicesDual(pidOD, pidOE){
-  const resp = await fetch("{{ url_for('api_orcamento_services') }}", {
+  const resp = await fetch("{{ url_for('api_orcamento_services_v3') }}", {
     method:"POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ product_id_od: parseInt(pidOD,10), product_id_oe: parseInt(pidOE,10) })
