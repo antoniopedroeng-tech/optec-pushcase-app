@@ -39,7 +39,7 @@
       <td>{{ u.role }}</td>
       <td class="muted">{{ u.created_at }}</td>
       <td>
-        <form method="post" action="{{ url_for('admin_users_delete', user_id=u.id) }}" onsubmit="return confirm('Excluir usuário {{u.username}}?');" style="display:inline;">
+        <form method="post" action="{{ url_for('admin_users_delete', uid=u.id) }}" onsubmit="return confirm('Excluir usuário {{u.username}}?');" style="display:inline;">
           <button class="btn danger small">Excluir</button>
         </form>
       </td>
