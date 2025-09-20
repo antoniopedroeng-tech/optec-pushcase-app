@@ -22,143 +22,6 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True) if DATABASE_URL else No
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False) if engine else None
 
 app = Flask(__name__)
-
-# ===================== ORÇAMENTO: NOVA LÓGICA OD/OE =====================
-from decimal import Decimal
-from flask import request, jsonify
-from sqlalchemy import text
-
-def _to_dec(v, default="0"):
-    try:
-        if v in (None, ""): return Decimal(default)
-        return Decimal(str(v).replace(",", "."))
-    except Exception:
-        return Decimal(default)
-
-def _in_range(v, a, b):
-    lo = Decimal(a); hi = Decimal(b)
-    if lo > hi: lo, hi = hi, lo
-    return Decimal(v) >= lo and Decimal(v) <= hi
-
-@app.post("/api/orcamento/options", endpoint="api_orcamento_options_v2")
-def api_orcamento_options_v2():
-    # Ajuste os perfis conforme sua regra
-    ret = require_role("admin","comprador","pagador","cliente")
-    if ret:
-        return ret
-
-    data = request.get_json(force=True) or {}
-    visao = (data.get("visao") or "").strip()
-
-    flags = data.get("flags") or {}
-    ar_i   = 1 if flags.get("ar")   else 0
-    foto_i = 1 if flags.get("foto") else 0
-    azul_i = 1 if flags.get("azul") else 0
-
-    od = data.get("od") or {}; oe = data.get("oe") or {}
-    od_esf = _to_dec(od.get("esf")); od_cil = _to_dec(od.get("cil"))
-    oe_esf = _to_dec(oe.get("esf")); oe_cil = _to_dec(oe.get("cil"))
-
-    q = text("""
-      SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
-      FROM orc_produto
-      WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
-    """)
-
-    od_list, oe_list = [], []
-    with engine.begin() as conn:
-        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
-            rec = {
-                "id": int(r["id"]),
-                "name": r["name"],
-                "price": float(r["price"] or 0)
-            }
-            if _in_range(od_esf, r["esf_min"], r["esf_max"]) and _in_range(od_cil, r["cil_min"], r["cil_max"]):
-                od_list.append(rec)
-            if _in_range(oe_esf, r["esf_min"], r["esf_max"]) and _in_range(oe_cil, r["cil_min"], r["cil_max"]):
-                oe_list.append(rec)
-
-    od_ids = {p["id"] for p in od_list}
-    oe_ids = {p["id"] for p in oe_list}
-    same = (od_ids == oe_ids)
-
-    resp = {
-        "same": same,
-        "products": [],
-        "od_products": sorted(od_list, key=lambda x: (x["name"], x["id"])),
-        "oe_products": sorted(oe_list, key=lambda x: (x["name"], x["id"])),
-    }
-    if same:
-        resp["products"] = resp["od_products"]
-    return jsonify(resp)
-
-
-@app.post("/api/orcamento/services", endpoint="api_orcamento_services_v2")
-def api_orcamento_services_v2():
-    ret = require_role("admin","comprador","pagador","cliente")
-    if ret:
-        return ret
-
-    data = request.get_json(force=True) or {}
-    pid_single = data.get("product_id")
-    pid_od = data.get("product_id_od")
-    pid_oe = data.get("product_id_oe")
-
-    pids = []
-    if pid_single:
-        try: pids = [int(pid_single)]
-        except: pids = []
-    else:
-        if pid_od:
-            try: pids.append(int(pid_od))
-            except: pass
-        if pid_oe:
-            try:
-                v = int(pid_oe)
-                if v not in pids: pids.append(v)
-            except:
-                pass
-
-    if not pids:
-        return jsonify({"mandatory": [], "optional": []})
-
-    def fetch_for(pid:int):
-        with engine.begin() as conn:
-            ob = conn.execute(text("""
-              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_serv_obrig o
-              JOIN orc_servico_catalogo c ON c.code=o.serv_code
-              WHERE o.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-            op = conn.execute(text("""
-              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_serv_opc o
-              JOIN orc_servico_catalogo c ON c.code=o.serv_code
-              WHERE o.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-            ac = conn.execute(text("""
-              SELECT a.serv_code, COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_acrescimo a
-              JOIN orc_servico_catalogo c ON c.code=a.serv_code
-              WHERE a.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-
-        mand = {r["code"]: {"id": r["code"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob}
-        for a in ac:
-            mand[a["serv_code"]] = {"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "price": float(a["price"])}
-        opt = {r["code"]: {"id": r["code"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in op}
-        return mand, opt
-
-    mand_all, opt_all = {}, {}
-    for pid in pids:
-        m, o = fetch_for(pid)
-        mand_all.update(m)
-        opt_all.update(o)
-
-    return jsonify({"mandatory": list(mand_all.values()), "optional": list(opt_all.values())})
-# ===================== /ORÇAMENTO: NOVA LÓGICA OD/OE =====================
-
-
 app.secret_key = SECRET_KEY
 
 # ============================ ERROS / DIAGNÓSTICO ============================
@@ -714,8 +577,8 @@ def _dec(v, default="0"):
     except Exception:
         return Decimal(default)
 
-@app.post("/api/orcamento/options", endpoint="api_orcamento_options_v2")
-def api_orcamento_options_v2():
+@app.post("/_disabled/orcamento/options")
+def api_orcamento_options_disabled():
     # permite admin, comprador, pagador e cliente
     ret = require_role("admin", "comprador", "pagador", "cliente")
     if ret:
@@ -758,8 +621,8 @@ def api_orcamento_options_v2():
 
     return {"products": products}
 
-@app.post("/api/orcamento/services", endpoint="api_orcamento_services_v2")
-def api_orcamento_services_v2():
+@app.post("/_disabled/orcamento/services")
+def api_orcamento_services_disabled():
     ret = require_role("admin","comprador","pagador","cliente")
     if ret:
         return ret
@@ -2050,3 +1913,129 @@ def extornos_criar(item_id):
     audit("extorno_create", f"item_id={item_id}")
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
+
+# ===================== ORÇAMENTO: NOVA LÓGICA OD/OE (SAFE REGISTER) =====================
+from decimal import Decimal
+from flask import request, jsonify
+from sqlalchemy import text as _orc_text
+
+def _orc_to_dec(v, default="0"):
+    try:
+        if v in (None, ""): return Decimal(default)
+        return Decimal(str(v).replace(",", "."))
+    except Exception:
+        return Decimal(default)
+
+def _orc_in_range(v, a, b):
+    lo = Decimal(a); hi = Decimal(b)
+    if lo > hi: lo, hi = hi, lo
+    return Decimal(v) >= lo and Decimal(v) <= hi
+
+def api_orcamento_options_v3():
+    ret = require_role("admin","comprador","pagador","cliente")
+    if ret:
+        return ret
+
+    data = request.get_json(force=True) or {}
+    visao = (data.get("visao") or "").strip()
+
+    flags = data.get("flags") or {}
+    ar_i   = 1 if flags.get("ar")   else 0
+    foto_i = 1 if flags.get("foto") else 0
+    azul_i = 1 if flags.get("azul") else 0
+
+    od = data.get("od") or {}; oe = data.get("oe") or {}
+    od_esf = _orc_to_dec(od.get("esf")); od_cil = _orc_to_dec(od.get("cil"))
+    oe_esf = _orc_to_dec(oe.get("esf")); oe_cil = _orc_to_dec(oe.get("cil"))
+
+    q = _orc_text("""
+      SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
+      FROM orc_produto
+      WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
+    """)
+
+    od_list, oe_list = [], []
+    with engine.begin() as conn:
+        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
+            rec = {"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)}
+            if _orc_in_range(od_esf, r["esf_min"], r["esf_max"]) and _orc_in_range(od_cil, r["cil_min"], r["cil_max"]):
+                od_list.append(rec)
+            if _orc_in_range(oe_esf, r["esf_min"], r["esf_max"]) and _orc_in_range(oe_cil, r["cil_min"], r["cil_max"]):
+                oe_list.append(rec)
+
+    same = ({p["id"] for p in od_list} == {p["id"] for p in oe_list})
+    resp = {
+        "same": same,
+        "products": sorted(od_list, key=lambda x: (x["name"], x["id"])) if same else [],
+        "od_products": sorted(od_list, key=lambda x: (x["name"], x["id"])),
+        "oe_products": sorted(oe_list, key=lambda x: (x["name"], x["id"])),
+    }
+    return jsonify(resp)
+
+def api_orcamento_services_v3():
+    ret = require_role("admin","comprador","pagador","cliente")
+    if ret:
+        return ret
+
+    data = request.get_json(force=True) or {}
+    pid_single = data.get("product_id")
+    pid_od = data.get("product_id_od")
+    pid_oe = data.get("product_id_oe")
+
+    pids = []
+    try:
+        if pid_single: pids = [int(pid_single)]
+        else:
+            if pid_od: pids.append(int(pid_od))
+            if pid_oe and int(pid_oe) not in pids: pids.append(int(pid_oe))
+    except Exception:
+        pids = []
+
+    if not pids:
+        return jsonify({"mandatory": [], "optional": []})
+
+    def fetch_for(pid:int):
+        with engine.begin() as conn:
+            ob = conn.execute(_orc_text("""
+              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+              FROM orc_produto_serv_obrig o
+              JOIN orc_servico_catalogo c ON c.code=o.serv_code
+              WHERE o.produto_id=:pid
+            """), {"pid": pid}).mappings().all()
+            op = conn.execute(_orc_text("""
+              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+              FROM orc_produto_serv_opc o
+              JOIN orc_servico_catalogo c ON c.code=o.serv_code
+              WHERE o.produto_id=:pid
+            """), {"pid": pid}).mappings().all()
+            ac = conn.execute(_orc_text("""
+              SELECT a.serv_code, COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
+              FROM orc_produto_acrescimo a
+              JOIN orc_servico_catalogo c ON c.code=a.serv_code
+              WHERE a.produto_id=:pid
+            """), {"pid": pid}).mappings().all()
+
+        mand = {r["code"]: {"id": r["code"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob}
+        for a in ac:
+            mand[a["serv_code"]] = {"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "price": float(a["price"])}
+        opt = {r["code"]: {"id": r["code"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in op}
+        return mand, opt
+
+    mand_all, opt_all = {}, {}
+    for pid in pids:
+        m, o = fetch_for(pid)
+        mand_all.update(m)
+        opt_all.update(o)
+
+    return jsonify({"mandatory": list(mand_all.values()), "optional": list(opt_all.values())})
+
+# Registro condicional, evitando sobrescrever endpoints existentes
+try:
+    existing = set(app.view_functions.keys())
+    if 'api_orcamento_options_v3' not in existing and 'api_orcamento_options' not in existing and 'api_orcamento_options_v2' not in existing:
+        app.add_url_rule('/api/orcamento/options', endpoint='api_orcamento_options_v3', view_func=api_orcamento_options_v3, methods=['POST'])
+    if 'api_orcamento_services_v3' not in existing and 'api_orcamento_services' not in existing and 'api_orcamento_services_v2' not in existing:
+        app.add_url_rule('/api/orcamento/services', endpoint='api_orcamento_services_v3', view_func=api_orcamento_services_v3, methods=['POST'])
+except Exception as _e:
+    print("[ORCAMENTO ROUTES] Skipped conditional registration:", _e, flush=True)
+# ===================== /ORÇAMENTO: NOVA LÓGICA OD/OE (SAFE REGISTER) =====================
