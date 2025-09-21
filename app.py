@@ -525,6 +525,27 @@ def orcamento():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
+        # --- Validação OS: numérico e dentro do intervalo configurado ---
+        cfg_min = get_option("os_range_min")
+        cfg_max = get_option("os_range_max")
+        try:
+            _os_min_cfg = int(cfg_min) if cfg_min and str(cfg_min).isdigit() else None
+            _os_max_cfg = int(cfg_max) if cfg_max and str(cfg_max).isdigit() else None
+        except Exception:
+            _os_min_cfg = _os_max_cfg = None
+
+        os_number = (request.form.get("os_number") or "").strip()
+        if not os_number.isdigit():
+            flash("O número da OS deve conter apenas dígitos.", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+        _osv = int(os_number)
+        if _os_min_cfg is not None and _osv < _os_min_cfg:
+            flash(f"OS fora do intervalo permitido (mínimo {_os_min_cfg}).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+        if _os_max_cfg is not None and _osv > _os_max_cfg:
+            flash(f"OS fora do intervalo permitido (máximo {_os_max_cfg}).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products)
+
         from werkzeug.security import check_password_hash
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
@@ -579,29 +600,22 @@ def _dec(v, default="0"):
 
 @app.post("/api/orcamento/options")
 def api_orcamento_options():
-    from decimal import Decimal
-    from sqlalchemy import text
+    # permite admin, comprador, pagador e cliente
     ret = require_role("admin", "comprador", "pagador", "cliente")
     if ret:
         return ret
 
     data = request.get_json(force=True) or {}
     visao = (data.get("visao") or "").strip()
-
     flags = data.get("flags") or {}
-    ar_i   = 1 if bool(flags.get("ar"))   else 0
-    foto_i = 1 if bool(flags.get("foto")) else 0
-    azul_i = 1 if bool(flags.get("azul")) else 0
+    ar   = bool(flags.get("ar"))
+    ar_i = 1 if ar else 0
+    foto = bool(flags.get("foto"))
+    foto_i = 1 if foto else 0
+    azul = bool(flags.get("azul"))
+    azul_i = 1 if azul else 0
 
-    od = data.get("od") or {}
-    oe = data.get("oe") or {}
-    def _dec(v, default="0"):
-        try:
-            if v in (None, ""): return Decimal(default)
-            return Decimal(str(v).replace(",", "."))
-        except Exception:
-            return Decimal(default)
-
+    od = data.get("od") or {}; oe = data.get("oe") or {}
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
     oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
 
@@ -611,121 +625,85 @@ def api_orcamento_options():
       WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
     """)
 
-    def in_range(v, a, b):
+    def inrng(v, a, b):
         a = Decimal(a); b = Decimal(b)
         if a == 0 and b == 0:
             return True
-        lo = min(a, b); hi = max(a, b)
+        lo = min(a,b); hi = max(a,b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
-    od_list, oe_list = [], []
+    products = []
     with engine.begin() as conn:
-        for r in conn.execute(q, {"visao": visao, "ar": ar_i, "foto": foto_i, "azul": azul_i}).mappings():
-            rec = {"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)}
-            ok_od = in_range(od_esf, r["esf_min"], r["esf_max"]) and in_range(od_cil, r["cil_min"], r["cil_max"])
-            ok_oe = in_range(oe_esf, r["esf_min"], r["esf_max"]) and in_range(oe_cil, r["cil_min"], r["cil_max"])
-            if ok_od:
-                od_list.append(rec)
-            if ok_oe:
-                oe_list.append(rec)
+        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
+            ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
+            ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
+            if ok_od and ok_oe:
+                products.append({"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)})
 
-    same = ({p["id"] for p in od_list} == {p["id"] for p in oe_list})
-    return {
-        "same": same,
-        "products": sorted(od_list, key=lambda x: (x["name"], x["id"])) if same else [],
-        "od_products": sorted(od_list, key=lambda x: (x["name"], x["id"])),
-        "oe_products": sorted(oe_list, key=lambda x: (x["name"], x["id"])),
-    }
+    return {"products": products}
+
 @app.post("/api/orcamento/services")
 def api_orcamento_services():
-    from decimal import Decimal
-    from sqlalchemy import text
-    ret = require_role("admin", "comprador", "pagador", "cliente")
+    ret = require_role("admin","comprador","pagador","cliente")
     if ret:
         return ret
 
     data = request.get_json(force=True) or {}
+    pid = int(data.get("product_id"))
 
-    pids = []
-    if data.get("product_id") is not None:
-        try:
-            pids = [int(data.get("product_id"))]
-        except Exception:
-            pids = []
-    else:
-        for key in ("product_id_od", "product_id_oe"):
-            if data.get(key) is not None:
-                try:
-                    pid = int(data.get(key))
-                    if pid not in pids:
-                        pids.append(pid)
-                except Exception:
-                    pass
-
-    if not pids:
-        return {"mandatory": [], "optional": []}
-
-    od = data.get("od") or {}
-    oe = data.get("oe") or {}
-    def _dec(v, default="0"):
-        try:
-            if v in (None, ""): return Decimal(default)
-            return Decimal(str(v).replace(",", "."))
-        except Exception:
-            return Decimal(default)
+    od = data.get("od") or {}; oe = data.get("oe") or {}
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
     oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
 
+    with engine.begin() as conn:
+        ob = conn.execute(text("""
+          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_serv_obrig o
+          JOIN orc_servico_catalogo c ON c.code=o.serv_code
+          WHERE o.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+        op = conn.execute(text("""
+          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_serv_opc o
+          JOIN orc_servico_catalogo c ON c.code=o.serv_code
+          WHERE o.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
+        ac = conn.execute(text("""
+          SELECT a.serv_code, a.esf_min, a.esf_max, a.cil_min, a.cil_max,
+                 COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
+          FROM orc_produto_acrescimo a
+          JOIN orc_servico_catalogo c ON c.code=a.serv_code
+          WHERE a.produto_id=:pid
+        """), {"pid": pid}).mappings().all()
+
     def within(v, a, b):
-        if a is None and b is None:
-            return False
+        if a is None and b is None: return False
         a = Decimal(a) if a is not None else Decimal(v)
         b = Decimal(b) if b is not None else Decimal(v)
-        lo = min(a, b); hi = max(a, b)
+        lo = min(a,b); hi = max(a,b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
-    mand_by_code = {}
-    opt_by_code  = {}
+    mandatory = [{"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"])} for r in ob]
 
-    with engine.begin() as conn:
-        for pid in pids:
-            ob = conn.execute(text("""
-              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_serv_obrig o
-              JOIN orc_servico_catalogo c ON c.code=o.serv_code
-              WHERE o.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-
-            op = conn.execute(text("""
-              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_serv_opc o
-              JOIN orc_servico_catalogo c ON c.code=o.serv_code
-              WHERE o.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-
-            ac = conn.execute(text("""
-              SELECT a.serv_code, a.esf_min, a.esf_max, a.cil_min, a.cil_max,
-                     COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_acrescimo a
-              JOIN orc_servico_catalogo c ON c.code=a.serv_code
-              WHERE a.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-
-            for r in ob:
-                mand_by_code[r["code"]] = {"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"] or 0)}
-
-            for a in ac:
-                trig_od = within(od_esf, a["esf_min"], a["esf_max"]) or within(od_cil, a["cil_min"], a["cil_max"])
-                trig_oe = within(oe_esf, a["esf_min"], a["esf_max"]) or within(oe_cil, a["cil_min"], a["cil_max"])
-                if trig_od or trig_oe:
-                    mand_by_code[a["serv_code"]] = {"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "display": a["name"], "price": float(a["price"] or 0)}
-
-            for r in op:
-                opt_by_code[r["code"]] = {"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"] or 0)}
-
-    mandatory = list(mand_by_code.values())
-    optional  = list(opt_by_code.values())
+    for a in ac:
+        esf_od_ok = within(od_esf, a["esf_min"], a["esf_max"])
+        cil_od_ok = within(od_cil, a["cil_min"], a["cil_max"])
+        esf_oe_ok = within(oe_esf, a["esf_min"], a["esf_max"])
+        cil_oe_ok = within(oe_cil, a["cil_min"], a["cil_max"])
+        trig_od = (esf_od_ok or cil_od_ok)
+        trig_oe = (esf_oe_ok or cil_oe_ok)
+        if trig_od or trig_oe:
+            mandatory.append({"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "display": a["name"], "price": float(a["price"])})
+    optional = [{"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"])} for r in op]
     return {"mandatory": mandatory, "optional": optional}
+# ================== fim das APIs de Orçamento ==================
+
+
+
+# -------- Admin: Usuários --------
+
 @app.route("/admin/users")
 def admin_users():
     ret = require_role("admin")
@@ -1465,26 +1443,7 @@ def compras_novo():
     products = [dict(p) for p in products]
 
     if request.method == "POST":
-
-        # --- Validação OS: numérica, dentro do intervalo e limite de uso (máx 2 por OS) ---
-        cfg_min = get_option("os_range_min")
-        cfg_max = get_option("os_range_max")
-        try:
-            os_min_cfg = int(cfg_min) if cfg_min and str(cfg_min).isdigit() else None
-            os_max_cfg = int(cfg_max) if cfg_max and str(cfg_max).isdigit() else None
-        except Exception:
-            os_min_cfg = os_max_cfg = None
-
-        def _validate_os_number(osn: str):
-            if not osn or not str(osn).isdigit():
-                return "O número da OS deve conter apenas dígitos."
-            v = int(osn)
-            if os_min_cfg is not None and v < os_min_cfg:
-                return f"OS fora do intervalo permitido (mínimo {os_min_cfg})."
-            if os_max_cfg is not None and v > os_max_cfg:
-                return f"OS fora do intervalo permitido (máximo {os_max_cfg})."
-            return None
-                action = (request.form.get("action") or "").strip().lower()
+        action = (request.form.get("action") or "").strip().lower()
 
         os_number = (request.form.get("os_number") or "").strip()
         pair_option = request.form.get("pair_option")  # 'meio' ou 'par'
@@ -1976,7 +1935,7 @@ def extornos_criar(item_id):
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
 
-# ============== System Options (OS range + usage policy) ==============
+# ==================== System Options (OS range) ====================
 from sqlalchemy import text as _sys_t
 
 def _ensure_sysopt_table():
@@ -2039,4 +1998,4 @@ def admin_import_config():
     set_option("os_range_max", str(vmax))
     flash(f"Intervalo de OS atualizado: {vmin} a {vmax}.", "success")
     return redirect(url_for("admin_import"))
-# ============== /System Options ==============
+# ================== /System Options ==================

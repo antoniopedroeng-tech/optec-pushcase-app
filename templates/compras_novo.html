@@ -472,19 +472,7 @@
     };
   }
 
-  document.getElementById('add_to_list').addEventListener('click', (ev) => {
-  const osVal = (document.getElementById('os_number').value || '').trim();
-  if (!/^[0-9]+$/.test(osVal)) { alert('O número da OS deve conter apenas dígitos.'); return; }
-  const osMin = {{ cfg.os_min if cfg.os_min is not none else 'null' }};
-  const osMax = {{ cfg.os_max if cfg.os_max is not none else 'null' }};
-  const ov = osVal ? parseInt(osVal, 10) : null;
-  if (ov !== null) {
-    if (osMin !== null && ov < osMin) { alert(`OS fora do intervalo permitido (mínimo ${osMin}).`); return; }
-    if (osMax !== null && ov > osMax) { alert(`OS fora do intervalo permitido (máximo ${osMax}).`); return; }
-  }
-  const used = pendingItems.filter(it => (it.os||'') === osVal).length;
-  if (used >= 2) { alert('Esta OS já foi utilizada mais de duas vezes (máximo 2 por OS).'); return; }
-  () => {
+  document.getElementById('add_to_list').addEventListener('click', () => {
     const os = document.getElementById('os_number').value.trim();
     if (!os) { alert('Informe a OS.'); return; }
     const pid = productSelect.value;
