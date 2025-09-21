@@ -525,28 +525,17 @@ def orcamento():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        # --- Validação OS: numérico e dentro do intervalo configurado ---
-        cfg_min = get_option("os_range_min")
-        cfg_max = get_option("os_range_max")
-        try:
-            _os_min_cfg = int(cfg_min) if cfg_min and str(cfg_min).isdigit() else None
-            _os_max_cfg = int(cfg_max) if cfg_max and str(cfg_max).isdigit() else None
-        except Exception:
-            _os_min_cfg = _os_max_cfg = None
-
-        os_number = (request.form.get("os_number") or "").strip()
-        if not os_number.isdigit():
-            flash("O número da OS deve conter apenas dígitos.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-        _osv = int(os_number)
-        if _os_min_cfg is not None and _osv < _os_min_cfg:
-            flash(f"OS fora do intervalo permitido (mínimo {_os_min_cfg}).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
-        if _os_max_cfg is not None and _osv > _os_max_cfg:
-            flash(f"OS fora do intervalo permitido (máximo {_os_max_cfg}).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
 
         from werkzeug.security import check_password_hash
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        u = db_one("SELECT * FROM users WHERE username=:u", u=username)
+        if u and check_password_hash(u["password_hash"], password):
+            session["user_id"] = u["id"]; session["role"] = u["role"]
+            flash(f"Bem-vindo, {u['username']}!", "success"); audit("login", f"user={u['username']}")
+            return redirect(url_for("index"))
+        flash("Credenciais inválidas", "error")
+
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         u = db_one("SELECT * FROM users WHERE username=:u", u=username)
