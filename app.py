@@ -577,8 +577,8 @@ def _dec(v, default="0"):
     except Exception:
         return Decimal(default)
 
-@app.post("/_disabled/orcamento/options")
-def api_orcamento_options_disabled():
+@app.post("/api/orcamento/options")
+def api_orcamento_options():
     # permite admin, comprador, pagador e cliente
     ret = require_role("admin", "comprador", "pagador", "cliente")
     if ret:
@@ -621,8 +621,8 @@ def api_orcamento_options_disabled():
 
     return {"products": products}
 
-@app.post("/_disabled/orcamento/services")
-def api_orcamento_services_disabled():
+@app.post("/api/orcamento/services")
+def api_orcamento_services():
     ret = require_role("admin","comprador","pagador","cliente")
     if ret:
         return ret
@@ -1422,6 +1422,127 @@ def compras_novo():
     products = [dict(p) for p in products]
 
     if request.method == "POST":
+
+        # === NOVO (lote): se vier uma lista JSON completa no campo oculto, processa todos os itens ===
+        raw_payload = (request.form.get("hidden_payload") or "").strip()
+        if raw_payload:
+            try:
+                import json
+                from collections import defaultdict, Counter
+                from sqlalchemy import text as _t
+                payload = json.loads(raw_payload)
+                bulk_items = []
+                for it in (payload or []):
+                    try:
+                        bulk_items.append({
+                            "os_number": str(it.get("os_number","")).strip(),
+                            "product_id": int(it.get("product_id")),
+                            "supplier_id": int(it.get("supplier_id")),
+                            "price": float(it.get("price")),
+                            "tipo": str(it.get("tipo","")).lower(),  # 'lente' ou 'bloco'
+                            "d": {
+                                "sphere": it.get("sphere"),
+                                "cylinder": (None if it.get("cylinder") is None else -abs(float(it.get("cylinder")))),
+                                "base": it.get("base"),
+                                "addition": it.get("addition"),
+                            }
+                        })
+                    except Exception:
+                        pass
+                # validações básicas
+                def _step_ok(x: float) -> bool:
+                    try:
+                        return (abs(float(x) * 100) % 25) == 0
+                    except Exception:
+                        return False
+                def _validate_item(pid, sid, tipo_item, price, d):
+                    rule = db_one("""
+                        SELECT r.*, p.kind as product_kind
+                        FROM rules r JOIN products p ON p.id = r.product_id
+                        WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
+                    """, pid=pid, sid=sid)
+                    if not rule:
+                        return None, None, "Fornecedor indisponível para este produto."
+                    if price is None or price <= 0 or price > float(rule["max_price"]) + 1e-6:
+                        return None, None, f"Preço inválido ou acima do máximo (R$ {float(rule['max_price']):.2f})."
+                    s = d.get("sphere"); c = d.get("cylinder")
+                    if s is None or float(s) < -20 or float(s) > 20 or (not _step_ok(s)):
+                        return None, None, "Esférico inválido (−20 a +20 em passos de 0,25)."
+                    if c is None or float(c) > 0 or float(c) < -15 or (not _step_ok(c)):
+                        return None, None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
+                    if tipo_item == "lente":
+                        new_pid, new_price, _changed = maybe_swap_lente_by_cylinder(pid, sid, price, c)
+                        return new_pid, new_price, None
+                    else:
+                        return pid, price, None
+                if bulk_items:
+                    # limite 2 por OS ( somando o que já existe )
+                    from collections import Counter
+                    os_new = Counter([it["os_number"] for it in bulk_items if it.get("os_number")])
+                    for osn, add_n in os_new.items():
+                        row = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=osn)
+                        existing_n = int(row["n"] if row else 0)
+                        if existing_n + add_n > 2:
+                            flash(f"OS {osn} excede o limite de 2 unidades.", "error")
+                            return render_template("compras_novo.html", combos=combos, products=products)
+                    validated = []
+                    for it in bulk_items:
+                        if not it["os_number"]:
+                            flash("Há item sem número de OS.", "error")
+                            return render_template("compras_novo.html", combos=combos, products=products)
+                        pid, price_adj, err = _validate_item(it["product_id"], it["supplier_id"], it["tipo"], it["price"], it["d"])
+                        if err:
+                            flash(f"OS {it['os_number']}: {err}", "error")
+                            return render_template("compras_novo.html", combos=combos, products=products)
+                        validated.append({
+                            "product_id": pid, "supplier_id": it["supplier_id"], "price": price_adj,
+                            "d": it["d"], "os_number": it["os_number"]
+                        })
+                    # cria 1 pedido por fornecedor
+                    by_supplier = defaultdict(list)
+                    for it in validated:
+                        by_supplier[it["supplier_id"]].append(it)
+                    created_orders = []
+                    from datetime import datetime
+                    with engine.begin() as conn:
+                        for sup_id, its in by_supplier.items():
+                            supplier_row = conn.execute(_t("SELECT * FROM suppliers WHERE id=:id"), {"id": sup_id}).mappings().first()
+                            faturado = (supplier_row and (supplier_row.get("billing") or 0) == 1)
+                            total_group = sum(float(i["price"]) for i in its)
+                            status = 'PAGO' if faturado else 'PENDENTE_PAGAMENTO'
+                            os_list = ", ".join(sorted({i["os_number"] for i in its}))
+                            note = f"OS {os_list}"
+                            res = conn.execute(_t("""
+                                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+                                VALUES (:b,:s,:st,:t,:n,:c,:u) RETURNING id
+                            """), {"b": session["user_id"], "s": sup_id, "st": status, "t": total_group, "n": note,
+                                    "c": datetime.utcnow(), "u": datetime.utcnow()})
+                            order_id = res.scalar_one()
+                            for i in its:
+                                conn.execute(_t("""
+                                    INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                                    VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
+                                """), {"o": order_id, "p": i["product_id"], "pr": i["price"],
+                                        "sf": i["d"].get("sphere"), "cl": i["d"].get("cylinder"),
+                                        "ba": i["d"].get("base"), "ad": i["d"].get("addition"), "os": i["os_number"]})
+                            if faturado:
+                                conn.execute(_t("""
+                                    INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
+                                    VALUES (:o,:p,:m,:r,:d,:a)
+                                """), {"o": order_id, "p": session["user_id"], "m": "FATURADO",
+                                        "r": note, "d": datetime.utcnow(), "a": total_group})
+                            created_orders.append((order_id, faturado))
+                    for oid, fat in created_orders: audit("order_create", f"id={oid} faturado={int(fat)}")
+                    if any(f for _, f in created_orders) and any((not f) for _, f in created_orders):
+                        flash("Pedidos criados: 1 FATURADO (lançado) e 1 PENDENTE (enviado ao pagador).", "success")
+                    elif all(f for _, f in created_orders):
+                        flash("Pedido(s) criado(s) como FATURADO(s) e incluído(s) diretamente no relatório.", "success")
+                    else:
+                        flash("Pedido(s) criado(s) e enviado(s) ao pagador.", "success")
+                    return redirect(url_for("compras_lista"))
+            except Exception as _e:
+                # em qualquer erro de parsing, segue o fluxo original (form simples)
+                pass
         action = (request.form.get("action") or "").strip().lower()
 
         os_number = (request.form.get("os_number") or "").strip()
@@ -1913,129 +2034,3 @@ def extornos_criar(item_id):
     audit("extorno_create", f"item_id={item_id}")
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
-
-# ===================== ORÇAMENTO: NOVA LÓGICA OD/OE (SAFE REGISTER) =====================
-from decimal import Decimal
-from flask import request, jsonify
-from sqlalchemy import text as _orc_text
-
-def _orc_to_dec(v, default="0"):
-    try:
-        if v in (None, ""): return Decimal(default)
-        return Decimal(str(v).replace(",", "."))
-    except Exception:
-        return Decimal(default)
-
-def _orc_in_range(v, a, b):
-    lo = Decimal(a); hi = Decimal(b)
-    if lo > hi: lo, hi = hi, lo
-    return Decimal(v) >= lo and Decimal(v) <= hi
-
-def api_orcamento_options_v3():
-    ret = require_role("admin","comprador","pagador","cliente")
-    if ret:
-        return ret
-
-    data = request.get_json(force=True) or {}
-    visao = (data.get("visao") or "").strip()
-
-    flags = data.get("flags") or {}
-    ar_i   = 1 if flags.get("ar")   else 0
-    foto_i = 1 if flags.get("foto") else 0
-    azul_i = 1 if flags.get("azul") else 0
-
-    od = data.get("od") or {}; oe = data.get("oe") or {}
-    od_esf = _orc_to_dec(od.get("esf")); od_cil = _orc_to_dec(od.get("cil"))
-    oe_esf = _orc_to_dec(oe.get("esf")); oe_cil = _orc_to_dec(oe.get("cil"))
-
-    q = _orc_text("""
-      SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
-      FROM orc_produto
-      WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
-    """)
-
-    od_list, oe_list = [], []
-    with engine.begin() as conn:
-        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
-            rec = {"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)}
-            if _orc_in_range(od_esf, r["esf_min"], r["esf_max"]) and _orc_in_range(od_cil, r["cil_min"], r["cil_max"]):
-                od_list.append(rec)
-            if _orc_in_range(oe_esf, r["esf_min"], r["esf_max"]) and _orc_in_range(oe_cil, r["cil_min"], r["cil_max"]):
-                oe_list.append(rec)
-
-    same = ({p["id"] for p in od_list} == {p["id"] for p in oe_list})
-    resp = {
-        "same": same,
-        "products": sorted(od_list, key=lambda x: (x["name"], x["id"])) if same else [],
-        "od_products": sorted(od_list, key=lambda x: (x["name"], x["id"])),
-        "oe_products": sorted(oe_list, key=lambda x: (x["name"], x["id"])),
-    }
-    return jsonify(resp)
-
-def api_orcamento_services_v3():
-    ret = require_role("admin","comprador","pagador","cliente")
-    if ret:
-        return ret
-
-    data = request.get_json(force=True) or {}
-    pid_single = data.get("product_id")
-    pid_od = data.get("product_id_od")
-    pid_oe = data.get("product_id_oe")
-
-    pids = []
-    try:
-        if pid_single: pids = [int(pid_single)]
-        else:
-            if pid_od: pids.append(int(pid_od))
-            if pid_oe and int(pid_oe) not in pids: pids.append(int(pid_oe))
-    except Exception:
-        pids = []
-
-    if not pids:
-        return jsonify({"mandatory": [], "optional": []})
-
-    def fetch_for(pid:int):
-        with engine.begin() as conn:
-            ob = conn.execute(_orc_text("""
-              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_serv_obrig o
-              JOIN orc_servico_catalogo c ON c.code=o.serv_code
-              WHERE o.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-            op = conn.execute(_orc_text("""
-              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_serv_opc o
-              JOIN orc_servico_catalogo c ON c.code=o.serv_code
-              WHERE o.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-            ac = conn.execute(_orc_text("""
-              SELECT a.serv_code, COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
-              FROM orc_produto_acrescimo a
-              JOIN orc_servico_catalogo c ON c.code=a.serv_code
-              WHERE a.produto_id=:pid
-            """), {"pid": pid}).mappings().all()
-
-        mand = {r["code"]: {"id": r["code"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in ob}
-        for a in ac:
-            mand[a["serv_code"]] = {"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "price": float(a["price"])}
-        opt = {r["code"]: {"id": r["code"], "code": r["code"], "name": r["name"], "price": float(r["price"])} for r in op}
-        return mand, opt
-
-    mand_all, opt_all = {}, {}
-    for pid in pids:
-        m, o = fetch_for(pid)
-        mand_all.update(m)
-        opt_all.update(o)
-
-    return jsonify({"mandatory": list(mand_all.values()), "optional": list(opt_all.values())})
-
-# Registro condicional, evitando sobrescrever endpoints existentes
-try:
-    existing = set(app.view_functions.keys())
-    if 'api_orcamento_options_v3' not in existing and 'api_orcamento_options' not in existing and 'api_orcamento_options_v2' not in existing:
-        app.add_url_rule('/api/orcamento/options', endpoint='api_orcamento_options_v3', view_func=api_orcamento_options_v3, methods=['POST'])
-    if 'api_orcamento_services_v3' not in existing and 'api_orcamento_services' not in existing and 'api_orcamento_services_v2' not in existing:
-        app.add_url_rule('/api/orcamento/services', endpoint='api_orcamento_services_v3', view_func=api_orcamento_services_v3, methods=['POST'])
-except Exception as _e:
-    print("[ORCAMENTO ROUTES] Skipped conditional registration:", _e, flush=True)
-# ===================== /ORÇAMENTO: NOVA LÓGICA OD/OE (SAFE REGISTER) =====================
