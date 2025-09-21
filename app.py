@@ -1506,7 +1506,7 @@ def compras_novo():
                     for it in bulk_items:
                         err_os = _validate_os_number(it["os_number"])
                         if err_os:
-                            flash(f"OS {it.get(\'os_number\', \'?\')}: {err_os}", "error")
+                            flash(f"OS {it.get('os_number', '?')}: {err_os}", "error")
                             return render_template("compras_novo.html", combos=combos, products=products)
                         pid, price_adj, err = _validate_item(it["product_id"], it["supplier_id"], it["tipo"], it["price"], it["d"])
                         if err:
