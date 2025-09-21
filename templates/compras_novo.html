@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Novo Pedido{% endblock %}
 {% block content %}
 <style>
@@ -24,7 +24,7 @@
     <div class="form-row">
       <div>
         <label>OS</label>
-        <input type="text" name="os_number" id="os_number" class="form-control" required />
+        <input type="text" name="os_number" id="os_number" class="form-control" required inputmode="numeric" pattern="[0-9]*" placeholder="{{ (cfg.os_min|string if cfg.os_min is not none else \'\') ~ (\'–\' ~ (cfg.os_max|string) if cfg.os_max is not none else \'\') }}" />
       </div>
       <div>
         <label>Par</label><br/>

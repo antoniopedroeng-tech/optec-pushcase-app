@@ -1423,7 +1423,24 @@ def compras_novo():
 
     if request.method == "POST":
 
-        # === NOVO (lote): se vier uma lista JSON completa no campo oculto, processa todos os itens ===
+# --- Validação de faixa de OS (numérico e dentro do intervalo) ---
+        cfg_min = get_option("os_range_min")
+        cfg_max = get_option("os_range_max")
+        try:
+            os_min_cfg = int(cfg_min) if cfg_min and str(cfg_min).isdigit() else None
+            os_max_cfg = int(cfg_max) if cfg_max and str(cfg_max).isdigit() else None
+        except Exception:
+            os_min_cfg = os_max_cfg = None
+
+        def _validate_os_number(osn: str):
+            if not osn or not str(osn).isdigit():
+                return "O número da OS deve conter apenas dígitos."
+            v = int(osn)
+            if os_min_cfg is not None and v < os_min_cfg:
+                return f"OS fora do intervalo permitido (mínimo {os_min_cfg})."
+            if os_max_cfg is not None and v > os_max_cfg:
+                return f"OS fora do intervalo permitido (máximo {os_max_cfg})."
+            return None        # === NOVO (lote): se vier uma lista JSON completa no campo oculto, processa todos os itens ===
         raw_payload = (request.form.get("hidden_payload") or "").strip()
         if raw_payload:
             try:
@@ -1487,8 +1504,9 @@ def compras_novo():
                             return render_template("compras_novo.html", combos=combos, products=products)
                     validated = []
                     for it in bulk_items:
-                        if not it["os_number"]:
-                            flash("Há item sem número de OS.", "error")
+                        err_os = _validate_os_number(it["os_number"])
+                        if err_os:
+                            flash(f"OS {it.get(\'os_number\', \'?\')}: {err_os}", "error")
                             return render_template("compras_novo.html", combos=combos, products=products)
                         pid, price_adj, err = _validate_item(it["product_id"], it["supplier_id"], it["tipo"], it["price"], it["d"])
                         if err:
@@ -2034,3 +2052,66 @@ def extornos_criar(item_id):
     audit("extorno_create", f"item_id={item_id}")
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
+
+# ============== System Options (OS range) ==============
+from sqlalchemy import text as _sys_t
+
+def _ensure_sysopt_table():
+    with engine.begin() as conn:
+        conn.execute(_sys_t("""
+            CREATE TABLE IF NOT EXISTS system_option (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """))
+
+def set_option(key:str, value:str):
+    _ensure_sysopt_table()
+    with engine.begin() as conn:
+        res = conn.execute(_sys_t("UPDATE system_option SET value=:v WHERE key=:k"), {"k": key, "v": str(value)})
+        if res.rowcount == 0:
+            conn.execute(_sys_t("INSERT INTO system_option (key, value) VALUES (:k, :v)"), {"k": key, "v": str(value)})
+
+def get_option(key:str, default=None):
+    _ensure_sysopt_table()
+    with engine.connect() as conn:
+        row = conn.execute(_sys_t("SELECT value FROM system_option WHERE key=:k"), {"k": key}).fetchone()
+        return row[0] if row else default
+
+@app.context_processor
+def inject_cfg():
+    try:
+        vmin = get_option("os_range_min")
+        vmax = get_option("os_range_max")
+        os_min = int(vmin) if vmin and str(vmin).isdigit() else None
+        os_max = int(vmax) if vmax and str(vmax).isdigit() else None
+    except Exception:
+        os_min = os_max = None
+    return {"cfg": {"os_min": os_min, "os_max": os_max}}
+
+@app.post("/admin/import/config")
+def admin_import_config():
+    ret = require_role("admin")
+    if ret: return ret
+    os_min = (request.form.get("os_min") or "").strip()
+    os_max = (request.form.get("os_max") or "").strip()
+
+    def _to_int_or_none(s):
+        s = (s or "").strip()
+        return int(s) if s.isdigit() else None
+
+    vmin = _to_int_or_none(os_min)
+    vmax = _to_int_or_none(os_max)
+
+    if vmin is None or vmax is None:
+        flash("Informe valores numéricos inteiros para o intervalo de OS.", "error")
+        return redirect(url_for("admin_import"))
+
+    if vmin > vmax:
+        vmin, vmax = vmax, vmin
+
+    set_option("os_range_min", str(vmin))
+    set_option("os_range_max", str(vmax))
+    flash(f"Intervalo de OS atualizado: {vmin} a {vmax}.", "success")
+    return redirect(url_for("admin_import"))
+# ============== /System Options (OS range) ==============
