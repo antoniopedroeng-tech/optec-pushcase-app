@@ -42,6 +42,22 @@
     </div>
   {% endif %}
 </form>
+<hr style="margin:32px 0">
+
+<h3>Configurações do Sistema</h3>
+<form method="POST" action="{{ url_for('admin_import_config') }}" class="card" style="padding:12px; display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+  <div style="min-width:280px;">
+    <label>Intervalo permitido para número de OS</label>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+      <input type="number" name="os_min" class="form-control" placeholder="Mín." min="0" value="{{ cfg.os_min if cfg.os_min is not none }}">
+      <span>até</span>
+      <input type="number" name="os_max" class="form-control" placeholder="Máx." min="0" value="{{ cfg.os_max if cfg.os_max is not none }}">
+      <button class="btn" type="submit">Salvar</button>
+    </div>
+    <div class="muted" style="margin-top:6px;">Ex.: se configurar de 10000 até 90000, o sistema só aceitará números de OS dentro desse intervalo (apenas dígitos).</div>
+  </div>
+</form>
+
 
 <p class="muted" style="margin-top:8px;">
   Cabeçalhos esperados (1ª aba): <em>Produto</em>, <em>Código</em>, <em>Valor</em>, <em>Tipo de visão</em> (VS/Progressiva/Bifocal),

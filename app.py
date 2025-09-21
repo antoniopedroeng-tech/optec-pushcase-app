@@ -33,18 +33,72 @@ def handle_exception(e):
     tb = traceback.format_exc()
     print(f"[ERROR] Rota: {request.path}\n{tb}", flush=True)
     html = """
-    {% extends "base.html" %}
-    {% block title %}Erro Interno (500){% endblock %}
-    {% block content %}
-      <h2>Erro Interno (500)</h2>
-      <p>Ocorreu um erro ao processar <code>{{ path }}</code>.</p>
-      <p>Tente novamente. O administrador pode verificar os logs do servidor para mais detalhes.</p>
-      <details style="margin-top:12px;">
-        <summary>Mostrar detalhes técnicos (stack trace)</summary>
-        <pre style="white-space:pre-wrap;background:#f7f7f7;border:1px solid #ddd;padding:8px;border-radius:8px;">{{ tb }}</pre>
-      </details>
-    {% endblock %}
-    """
+{% extends "base.html" %}
+{% block content %}
+<h2>Importar planilha (Excel .xlsx)</h2>
+
+<form method="POST" enctype="multipart/form-data" action="{{ url_for('admin_import') }}" style="margin-bottom:16px;">
+  <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="file" accept=".xlsx,.xls" required>
+    <button class="btn">Importar (geral)</button>
+    <a class="btn" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
+  </div>
+  {% if report %}
+  <div class="card" style="margin-top:12px;">
+    <div><strong>Fornecedores</strong>: inseridos {{ report.suppliers.inserted }}, atualizados {{ report.suppliers.updated }}</div>
+    <div><strong>Produtos</strong>: inseridos {{ report.products.inserted }}, atualizados {{ report.products.updated }}</div>
+    <div><strong>Regras</strong>: inseridos {{ report.rules.inserted }}, atualizados {{ report.rules.updated }}</div>
+    {% if report.errors and report.errors|length %}
+      <div style="margin-top:6px; color:#8b0000;">
+        {% for e in report.errors %}<div>• {{ e }}</div>{% endfor %}
+      </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</form>
+
+<hr style="margin:20px 0">
+
+<h3>Importar Regras do Orçamento</h3>
+<form method="POST" enctype="multipart/form-data" action="{{ url_for('admin_import_orcamento') }}">
+  <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="file_orcamento" accept=".xlsx,.xls" required>
+    <button class="btn" type="submit">Importar regras</button>
+  </div>
+  {% if imp_orcamento %}
+    <div class="card" style="margin-top:12px;">
+      <div><strong>Produtos</strong>: inseridos {{ imp_orcamento.prod_inserted }}, atualizados {{ imp_orcamento.prod_updated }}</div>
+      <div><strong>Serviços obrigatórios</strong>: {{ imp_orcamento.serv_obrig_upserts }}</div>
+      <div><strong>Serviços opcionais</strong>: {{ imp_orcamento.serv_opc_upserts }}</div>
+      <div><strong>Acréscimos</strong>: {{ imp_orcamento.acresc_upserts }}</div>
+      <div class="muted" style="margin-top:6px;">Linhas lidas: {{ imp_orcamento.rows }}</div>
+    </div>
+  {% endif %}
+</form>
+
+<hr style="margin:32px 0">
+
+<h3>Configurações do Sistema</h3>
+<form method="POST" action="{{ url_for('admin_import_config') }}" class="card" style="padding:12px; display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+  <div style="min-width:280px;">
+    <label>Intervalo permitido para número de OS</label>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+      <input type="number" name="os_min" class="form-control" placeholder="Mín." min="0" value="{{ cfg.os_min if cfg.os_min is not none }}">
+      <span>até</span>
+      <input type="number" name="os_max" class="form-control" placeholder="Máx." min="0" value="{{ cfg.os_max if cfg.os_max is not none }}">
+      <button class="btn" type="submit">Salvar</button>
+    </div>
+    <div class="muted" style="margin-top:6px;">Ex.: se configurar de 10000 até 90000, o sistema só aceitará números de OS dentro desse intervalo (apenas dígitos).</div>
+  </div>
+</form>
+
+<p class="muted" style="margin-top:8px;">
+  Cabeçalhos esperados (1ª aba): <em>Produto</em>, <em>Código</em>, <em>Valor</em>, <em>Tipo de visão</em> (VS/Progressiva/Bifocal),
+  <em>Antirreflexo</em>, <em>Fotosensível</em>, <em>Filtro azul</em>, <em>ESF mínimo</em>, <em>ESF máximo</em>,
+  <em>CIL mínimo</em>, <em>CIL máximo</em>, <em>Serviços obrigatórios</em>, <em>Serviços disponíveis</em>, <em>Acréscimos</em>.
+</p>
+{% endblock %}
+"""
     try:
         return render_template_string(html, path=request.path, tb=tb), 500
     except Exception:
@@ -525,17 +579,7 @@ def orcamento():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-
         from werkzeug.security import check_password_hash
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        u = db_one("SELECT * FROM users WHERE username=:u", u=username)
-        if u and check_password_hash(u["password_hash"], password):
-            session["user_id"] = u["id"]; session["role"] = u["role"]
-            flash(f"Bem-vindo, {u['username']}!", "success"); audit("login", f"user={u['username']}")
-            return redirect(url_for("index"))
-        flash("Credenciais inválidas", "error")
-
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         u = db_one("SELECT * FROM users WHERE username=:u", u=username)
@@ -1923,68 +1967,3 @@ def extornos_criar(item_id):
     audit("extorno_create", f"item_id={item_id}")
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
-
-# ==================== System Options (OS range) ====================
-from sqlalchemy import text as _sys_t
-
-def _ensure_sysopt_table():
-    if not engine:
-        return
-    with engine.begin() as conn:
-        conn.execute(_sys_t("""
-            CREATE TABLE IF NOT EXISTS system_option (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """))
-
-def set_option(key:str, value:str):
-    _ensure_sysopt_table()
-    with engine.begin() as conn:
-        res = conn.execute(_sys_t("UPDATE system_option SET value=:v WHERE key=:k"), {"k": key, "v": str(value)})
-        if res.rowcount == 0:
-            conn.execute(_sys_t("INSERT INTO system_option (key, value) VALUES (:k, :v)"), {"k": key, "v": str(value)})
-
-def get_option(key:str, default=None):
-    _ensure_sysopt_table()
-    with engine.connect() as conn:
-        row = conn.execute(_sys_t("SELECT value FROM system_option WHERE key=:k"), {"k": key}).fetchone()
-        return row[0] if row else default
-
-@app.context_processor
-def inject_cfg():
-    try:
-        vmin = get_option("os_range_min")
-        vmax = get_option("os_range_max")
-        os_min = int(vmin) if vmin is not None and str(vmin).isdigit() else None
-        os_max = int(vmax) if vmax is not None and str(vmax).isdigit() else None
-    except Exception:
-        os_min = os_max = None
-    return {"cfg": {"os_min": os_min, "os_max": os_max}}
-
-@app.post("/admin/import/config")
-def admin_import_config():
-    ret = require_role("admin")
-    if ret: return ret
-    os_min = (request.form.get("os_min") or "").strip()
-    os_max = (request.form.get("os_max") or "").strip()
-
-    def _to_int_or_none(s):
-        s = (s or "").strip()
-        return int(s) if s.isdigit() else None
-
-    vmin = _to_int_or_none(os_min)
-    vmax = _to_int_or_none(os_max)
-
-    if vmin is None or vmax is None:
-        flash("Informe valores numéricos inteiros para o intervalo de OS.", "error")
-        return redirect(url_for("admin_import"))
-
-    if vmin > vmax:
-        vmin, vmax = vmax, vmin
-
-    set_option("os_range_min", str(vmin))
-    set_option("os_range_max", str(vmax))
-    flash(f"Intervalo de OS atualizado: {vmin} a {vmax}.", "success")
-    return redirect(url_for("admin_import"))
-# ================== /System Options ==================
