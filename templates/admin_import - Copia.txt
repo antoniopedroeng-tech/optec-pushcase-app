@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Admin → Importar</h2>
+
+<!-- Import existente -->
+<form method="POST" enctype="multipart/form-data" action="{{ url_for('admin_import') }}" style="margin-bottom:16px;">
+  <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="file" accept=".xlsx,.xls" required>
+    <button class="btn">Importar (geral)</button>
+    <a class="btn" href="{{ url_for('admin_import_template') }}">Baixar Template</a>
+  </div>
+  {% if report %}
+  <div class="card" style="margin-top:12px;">
+    <div><strong>Suppliers</strong> — inseridos {{ report.suppliers.inserted }}, atualizados {{ report.suppliers.updated }}</div>
+    <div><strong>Products</strong> — inseridos {{ report.products.inserted }}, atualizados {{ report.products.updated }}</div>
+    <div><strong>Rules</strong> — inseridos {{ report.rules.inserted }}, atualizados {{ report.rules.updated }}</div>
+    {% if report.errors and report.errors|length %}
+      <div style="margin-top:6px; color:#8b0000;">
+        {% for e in report.errors %}<div>• {{ e }}</div>{% endfor %}
+      </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</form>
+
+<hr style="margin:20px 0">
+
+<!-- NOVA seção: Regras do Orçamento -->
+<h3>Importar Regras do Orçamento</h3>
+<form method="POST" enctype="multipart/form-data" action="{{ url_for('admin_import_orcamento') }}">
+  <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="file_orcamento" accept=".xlsx,.xls" required>
+    <button class="btn" type="submit">Importar regras</button>
+  </div>
+  {% if imp_orcamento %}
+    <div class="card" style="margin-top:12px;">
+      <div><strong>Produtos</strong>: inseridos {{ imp_orcamento.prod_inserted }}, atualizados {{ imp_orcamento.prod_updated }}</div>
+      <div><strong>Serviços obrigatórios</strong>: {{ imp_orcamento.serv_obrig_upserts }}</div>
+      <div><strong>Serviços opcionais</strong>: {{ imp_orcamento.serv_opc_upserts }}</div>
+      <div><strong>Acréscimos</strong>: {{ imp_orcamento.acresc_upserts }}</div>
+      <div class="muted" style="margin-top:6px;">Linhas lidas: {{ imp_orcamento.rows }}</div>
+    </div>
+  {% endif %}
+</form>
+
+<p class="muted" style="margin-top:8px;">
+  Cabeçalhos esperados (1ª aba): <em>Produto</em>, <em>Código</em>, <em>Valor</em>, <em>Tipo de visão</em> (VS/Progressiva/Bifocal),
+  <em>Antirreflexo</em>, <em>Fotosensível</em>, <em>Filtro azul</em>, <em>ESF mínimo</em>, <em>ESF máximo</em>,
+  <em>CIL mínimo</em>, <em>CIL máximo</em>, <em>Serviços obrigatórios</em>, <em>Serviços disponíveis</em>, <em>Acréscimos</em>.
+</p>
+{% endblock %}
+
+<hr style="margin:20px 0">
+
+<!-- Configurações do Sistema -->
+<h3>Configurações do Sistema</h3>
+<form method="POST" action="{{ url_for('admin_import_config') }}" class="card" style="padding:12px; display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+  <div>
+    <label>Intervalo permitido para número de OS</label>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+      <input type="number" name="os_min" class="form-control" placeholder="Mín." min="0" value="{{ cfg.os_min if cfg.os_min is not none }}">
+      <span>até</span>
+      <input type="number" name="os_max" class="form-control" placeholder="Máx." min="0" value="{{ cfg.os_max if cfg.os_max is not none }}">
+      <button class="btn" type="submit">Salvar</button>
+    </div>
+    <div class="muted" style="margin-top:4px;">Ex.: se configurar de 10000 até 90000, só aceitará OS dentro desse intervalo (apenas dígitos).</div>
+  </div>
+</form>
+
