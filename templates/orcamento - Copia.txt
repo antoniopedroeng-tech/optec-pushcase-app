@@ -1,0 +1,491 @@
+﻿{% extends "base.html" %}
+{% block title %}Orçamento{% endblock %}
+{% block content %}
+
+<style>
+  .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  .label { font-weight:600; margin-bottom:6px; display:block; }
+  .muted { color:#6b7280; }
+  .field { width:100%; padding:10px 12px; border:1px solid #d1d5db; border-radius:10px; }
+  .field[disabled] { background:#f3f4f6; }
+  .table-mini { width:100%; border-collapse:separate; border-spacing: 0 8px; }
+  .table-mini th { text-align:left; font-weight:600; color:#374151; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .total { font-size:1.1rem; font-weight:700; }
+  .btn { border:1px solid #2563eb; color:#fff; background:#2563eb; padding:10px 14px; border-radius:10px; cursor:pointer; }
+  .btn.secondary { background:#6b7280; border-color:#6b7280; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:999px; padding:6px 10px; font-size:.9rem; }
+  @media (max-width: 980px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  /* === Mobile: arruma as três flags para linhas empilhadas e clique confortável === */
+  @media (max-width: 768px) {
+    .flags-row { 
+      display: grid !important; 
+      grid-template-columns: 1fr !important; 
+      gap: 10px !important; 
+    }
+    .flags-row > span { 
+      display: flex; 
+      align-items: center; 
+      gap: 10px; 
+      justify-content: flex-start; 
+    }
+    .flags-row input[type="checkbox"] { width: 20px; height: 20px; }
+  }
+
+</style>
+
+<h2 style="margin: 8px 0 16px;">Orçamento</h2>
+
+<div class="grid-2">
+
+  <!-- ESQUERDA -->
+  <div class="card">
+
+    <label class="label">Tipo de visão</label>
+    <select id="visao" class="field">
+      <option value="" selected disabled class="muted">Selecione uma opção</option>
+      <option value="visao_simples">Visão simples</option>
+      <option value="progressiva">Progressiva</option>
+      <option value="bifocal">Bifocal</option>
+    </select>
+
+    <div class="row" style="margin-top:12px">
+      <label class="row flags-row" style="gap:16px; align-items:center;">
+        <span style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="ck_ar" disabled>
+          <span>Anti-reflexo</span>
+        </span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="ck_foto" disabled>
+          <span>Fotosensível</span>
+        </span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="ck_azul" disabled>
+          <span>Filtro azul</span>
+        </span>
+      </label>
+    </div>
+
+    <div style="margin-top:16px;">
+      <table class="table-mini">
+        <thead>
+          <tr><th></th><th>Esférico</th><th>Cilíndrico</th><th>Eixo</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>OD</th>
+            <td><input id="od_esf" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="od_cil" class="field" type="text" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
+            <td><input id="od_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
+          </tr>
+          <tr>
+            <th>OE</th>
+            <td><input id="oe_esf" class="field" type="number" step="0.25" disabled></td>
+            <td><input id="oe_cil" class="field" type="text" disabled inputmode="decimal" pattern="-?\d+(?:[\.,]\d{1,2})?"></td>
+            <td><input id="oe_eixo" class="field" type="number" step="1" min="0" max="359" disabled></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="box_adicao" style="display:none; margin-top:12px;">
+      <label class="label">Adição</label>
+      <input id="adicao" class="field" type="number" step="0.25" min="1.00" max="4.00" placeholder="+1.00 a +4.00">
+    </div>
+
+  </div>
+
+  <!-- DIREITA -->
+  <div class="card">
+    <label class="label">Produtos disponíveis</label>
+    <!-- Lista única (quando same=true) -->
+    <select id="sel_produto" class="field">
+      <option value="" selected disabled class="muted">Selecione um produto</option>
+    </select>
+
+    <!-- Listas duplas (quando same=false) -->
+    <div id="box_dual" style="display:none; margin-top:10px;">
+      <div class="row" style="gap:12px;">
+        <div style="flex:1;">
+          <div class="muted" style="margin-bottom:6px;">Produto OD</div>
+          <select id="sel_produto_od" class="field">
+            <option value="" selected disabled class="muted">Selecione produto para OD</option>
+          </select>
+        </div>
+        <div style="flex:1;">
+          <div class="muted" style="margin-bottom:6px;">Produto OE</div>
+          <select id="sel_produto_oe" class="field">
+            <option value="" selected disabled class="muted">Selecione produto para OE</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <label class="label">Serviços indispensáveis</label>
+      <div id="list_serv_mand" class="chips"></div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <label class="label">Serviços adicionais</label>
+      <select id="sel_serv_add" class="field" multiple size="5" disabled></select>
+      <div class="muted" style="margin-top:6px;">(Selecione um ou mais)</div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <label class="label">Produto final</label>
+      <textarea id="produto_final" class="field mono" rows="3" readonly placeholder="Produto + serviços indispensáveis + serviços adicionais"></textarea>
+    </div>
+
+    <div class="row" style="margin-top:10px; align-items:center; justify-content:space-between;">
+      <div class="total">Total: R$ <span id="total_val">0,00</span></div>
+      <div style="flex:0 0 auto">
+        <button id="btn_limpar" type="button" class="btn secondary">Limpar</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  const money = (v) => (isNaN(v) ? 0 : v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  const visao = document.getElementById('visao');
+  const ck_ar = document.getElementById('ck_ar');
+  const ck_foto = document.getElementById('ck_foto');
+  const ck_azul = document.getElementById('ck_azul');
+
+  const od_esf = document.getElementById('od_esf');
+  const od_cil = document.getElementById('od_cil');
+  const od_eixo = document.getElementById('od_eixo');
+  const oe_esf = document.getElementById('oe_esf');
+  const oe_cil = document.getElementById('oe_cil');
+  const oe_eixo = document.getElementById('oe_eixo');
+
+  const box_adicao = document.getElementById('box_adicao');
+  const adicao = document.getElementById('adicao');
+
+  // Produtos (single vs dual)
+  const sel_produto = document.getElementById('sel_produto');
+  const box_dual = document.getElementById('box_dual');
+  const sel_produto_od = document.getElementById('sel_produto_od');
+  const sel_produto_oe = document.getElementById('sel_produto_oe');
+
+  // Helpers p/ cilíndrico com vírgula (faixa -10..0, passo 0.25)
+  function toNumberPt(v){ if(v==null) return null; v=String(v).trim().replace(',', '.'); if(v==='') return null; const n=Number(v); return Number.isNaN(n)?null:n; }
+  function normalizeCylinder(el){
+    const n0 = toNumberPt(el.value);
+    if(n0==null){ el.value=''; return; }
+    let n = n0;
+    if(n>0) n = -n;           // força negativo (exceto 0)
+    if(n < -10) n = -10;
+    if(n > 0) n = 0;
+    n = Math.round(n*4)/4;    // passo 0.25
+    if(Object.is(n,-0)) n = 0;
+    el.value = String(n).replace('.', ','); // volta vírgula
+  }
+  function clampEixo(el){
+    let v = parseInt((el.value||'0'),10);
+    if(Number.isNaN(v)) v = 0;
+    if(v<0) v = 0;
+    if(v>359) v = 359;
+    el.value = String(v);
+  }
+
+  const list_serv_mand = document.getElementById('list_serv_mand');
+  const sel_serv_add = document.getElementById('sel_serv_add');
+
+  const produto_final = document.getElementById('produto_final');
+  const total_val = document.getElementById('total_val');
+  const btn_limpar = document.getElementById('btn_limpar');
+
+  // Estado
+  let state = {
+    same: true,
+    products: [],                // quando same=true
+    productSelected: null,
+    od_products: [],             // quando same=false
+    oe_products: [],
+    productSelectedOD: null,
+    productSelectedOE: null,
+    mandatory: [],
+    optional: [],
+    optionalsSelected: []
+  };
+
+  function enableRecipeFields() {
+    [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo].forEach(el => el.disabled = false);
+    if (visao.value === 'progressiva' || visao.value === 'bifocal') {
+      box_adicao.style.display = '';
+    } else {
+      box_adicao.style.display = 'none';
+      adicao.value = '';
+    }
+    tryFetchOptions();
+  }
+  visao.addEventListener('change', enableRecipeFields);
+
+  ;[od_cil, oe_cil].forEach(el=>{ el.addEventListener('blur', ()=>normalizeCylinder(el)); el.addEventListener('change', ()=>normalizeCylinder(el)); });
+  ;[od_eixo, oe_eixo].forEach(el=>{ el.addEventListener('blur', ()=>clampEixo(el)); el.addEventListener('change', ()=>clampEixo(el)); });
+
+  [ck_ar, ck_foto, ck_azul, od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo, adicao].forEach(el => {
+    el.addEventListener('input', tryFetchOptions);
+    el.addEventListener('change', tryFetchOptions);
+  });
+
+  function recipeIsFilled() {
+    const fields = [od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo];
+    if (fields.some(f => f.value === '')) return false;
+    if ((visao.value === 'progressiva' || visao.value === 'bifocal') && adicao.value === '') return false;
+    return true;
+  }
+
+  async function tryFetchOptions() {
+    clampEixo(od_eixo); clampEixo(oe_eixo);
+    if (!visao.value) return;
+    if (!recipeIsFilled()) {
+      resetProductsUI();
+      return;
+    }
+
+    const payload = {
+      visao: visao.value,
+      flags: { ar: ck_ar.checked, foto: ck_foto.checked, azul: ck_azul.checked },
+      od: { esf: toNumberPt(od_esf.value||0), cil: toNumberPt(od_cil.value||0), eixo: parseInt(od_eixo.value||0) },
+      oe: { esf: toNumberPt(oe_esf.value||0), cil: toNumberPt(oe_cil.value||0), eixo: parseInt(oe_eixo.value||0) },
+      adicao: adicao.value ? parseFloat(adicao.value) : null
+    };
+
+    try {
+      // Usar URL literal para evitar mismatch de endpoint
+      const resp = await fetch("/api/orcamento/options", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+
+      state.same = !!data.same;
+      state.products = data.products || [];
+      state.od_products = data.od_products || [];
+      state.oe_products = data.oe_products || [];
+      state.productSelected = null;
+      state.productSelectedOD = null;
+      state.productSelectedOE = null;
+      state.mandatory = []; state.optional = []; state.optionalsSelected = [];
+
+      if (state.same) {
+        // Mostrar select único
+        sel_produto.style.display = '';
+        sel_produto.disabled = false;
+        box_dual.style.display = 'none';
+        fillSingleSelect();
+      } else {
+        // Mostrar duplo
+        sel_produto.style.display = 'none';
+        box_dual.style.display = '';
+        fillDualSelects();
+      }
+
+      // Limpa serviços
+      list_serv_mand.innerHTML = '';
+      sel_serv_add.innerHTML = '';
+      sel_serv_add.disabled = true;
+
+      updateSummaryAndTotal();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function resetProductsUI(){
+    sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
+    sel_produto.disabled = true;
+    sel_produto.style.display = ''; // volta pro modo simples por padrão
+    box_dual.style.display = 'none';
+    list_serv_mand.innerHTML = '';
+    sel_serv_add.innerHTML = '';
+    sel_serv_add.disabled = true;
+    state = { same:true, products:[], productSelected:null, od_products:[], oe_products:[], productSelectedOD:null, productSelectedOE:null, mandatory:[], optional:[], optionalsSelected:[] };
+    updateSummaryAndTotal();
+  }
+
+  function fillSingleSelect(){
+    sel_produto.innerHTML = '<option value="" disabled selected class="muted">Selecione um produto</option>';
+    state.products.forEach(p => {
+      const o = document.createElement('option');
+      o.value = String(p.id);
+      o.textContent = `${p.name} — R$ ${money(p.price)}`;
+      o.dataset.price = p.price ?? 0;
+      sel_produto.appendChild(o);
+    });
+    sel_produto.disabled = state.products.length === 0;
+  }
+
+  function fillDualSelects(){
+    function fill(sel, arr, placeholder){
+      sel.innerHTML = `<option value="" disabled selected class="muted">${placeholder}</option>`;
+      arr.forEach(p => {
+        const o = document.createElement('option');
+        o.value = String(p.id);
+        o.textContent = `${p.name} — R$ ${money(p.price)}`;
+        o.dataset.price = p.price ?? 0;
+        sel.appendChild(o);
+      });
+      sel.disabled = arr.length === 0;
+    }
+    fill(sel_produto_od, state.od_products, "Selecione produto para OD");
+    fill(sel_produto_oe, state.oe_products, "Selecione produto para OE");
+  }
+
+  // Carrega serviços conforme seleção
+  sel_produto.addEventListener('change', async () => {
+    const id = sel_produto.value;
+    state.productSelected = state.products.find(p => String(p.id) === id) || null;
+
+    const payload = {
+      product_id: parseInt(id, 10),
+      od: { esf: toNumberPt(od_esf.value||0), cil: toNumberPt(od_cil.value||0) },
+      oe: { esf: toNumberPt(oe_esf.value||0), cil: toNumberPt(oe_cil.value||0) }
+    };
+    await fetchAndRenderServices(payload);
+  });
+
+  async function onDualChanged(){
+    const idOD = sel_produto_od.value;
+    const idOE = sel_produto_oe.value;
+    state.productSelectedOD = state.od_products.find(p => String(p.id) === idOD) || null;
+    state.productSelectedOE = state.oe_products.find(p => String(p.id) === idOE) || null;
+
+    if (state.productSelectedOD && state.productSelectedOE){
+      const payload = {
+        product_id_od: parseInt(idOD, 10),
+        product_id_oe: parseInt(idOE, 10),
+        od: { esf: toNumberPt(od_esf.value||0), cil: toNumberPt(od_cil.value||0) },
+        oe: { esf: toNumberPt(oe_esf.value||0), cil: toNumberPt(oe_cil.value||0) }
+      };
+      await fetchAndRenderServices(payload);
+    } else {
+      list_serv_mand.innerHTML = '';
+      sel_serv_add.innerHTML = '';
+      sel_serv_add.disabled = true;
+      state.mandatory = []; state.optional = []; state.optionalsSelected = [];
+      updateSummaryAndTotal();
+    }
+  }
+
+  sel_produto_od.addEventListener('change', onDualChanged);
+  sel_produto_oe.addEventListener('change', onDualChanged);
+
+  async function fetchAndRenderServices(payload){
+    try{
+      const resp = await fetch("/api/orcamento/services", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+
+      // obrigatórios
+      list_serv_mand.innerHTML = '';
+      (data.mandatory||[]).forEach(s => {
+        const chip = document.createElement('span'); chip.className='chip';
+        const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const display = s.display || s.description || s.desc || s.name || s.id;
+        chip.textContent = s.price ? `${display} — R$ ${price}` : `${display}`;
+        chip.dataset.price = s.price ?? 0;
+        list_serv_mand.appendChild(chip);
+      });
+
+      // opcionais
+      sel_serv_add.innerHTML = '';
+      (data.optional||[]).forEach(s => {
+        const o = document.createElement('option');
+        o.value = String(s.id || s.code);
+        const price = (isNaN(s.price)?0:s.price).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const display = s.display || s.description || s.desc || s.name || s.id;
+        o.textContent = `${display} — R$ ${price}`;
+        o.dataset.display = display;
+        o.dataset.price = s.price ?? 0;
+        sel_serv_add.appendChild(o);
+      });
+      sel_serv_add.disabled = (data.optional||[]).length === 0;
+      state.mandatory = data.mandatory || [];
+      state.optional = data.optional || [];
+      state.optionalsSelected = [];
+
+      updateSummaryAndTotal();
+    }catch(e){ console.error(e); }
+  }
+
+  sel_serv_add.addEventListener('change', () => {
+    const selected = Array.from(sel_serv_add.selectedOptions).map(o => ({
+      id: o.value,
+      name: o.dataset.display || o.textContent,
+      price: parseFloat(o.dataset.price || '0')
+    }));
+    state.optionalsSelected = selected;
+    updateSummaryAndTotal();
+  });
+
+  function updateSummaryAndTotal() {
+    let parts = [];
+    let total = 0;
+
+    // Produto final: modo single ou dual (½ + ½)
+    if (state.same) {
+      if (state.productSelected) {
+        parts.push(state.productSelected.name);
+        total += parseFloat(state.productSelected.price || 0);
+      }
+    } else {
+      const pOD = state.productSelectedOD;
+      const pOE = state.productSelectedOE;
+      if (pOD && pOE) {
+        const vOD = parseFloat(pOD.price || 0);
+        const vOE = parseFloat(pOE.price || 0);
+        const half = 0.5*vOD + 0.5*vOE;
+        parts.push(`½ ${pOD.name} + ½ ${pOE.name}`);
+        total += half;
+      }
+    }
+
+    // obrigatórios exibidos (chips)
+    Array.from(list_serv_mand.children).forEach(ch => {
+      const txt = ch.textContent || "";
+      const cut = txt.indexOf(' — ');
+      const name = cut > -1 ? txt.slice(0, cut) : txt;
+      parts.push(name);
+      total += parseFloat(ch.dataset.price || '0');
+    });
+
+    // opcionais selecionados
+    if (state.optionalsSelected && state.optionalsSelected.length) {
+      state.optionalsSelected.forEach(s => {
+        const name = (s.name || '').split(' — ')[0];
+        parts.push(name);
+        total += parseFloat(s.price || 0);
+      });
+    }
+
+    produto_final.value = parts.length ? parts.join(' + ') : '';
+    total_val.textContent = money(total);
+  }
+
+  btn_limpar.addEventListener('click', () => {
+    visao.value = '';
+    [ck_ar, ck_foto, ck_azul].forEach(c => { c.checked = false; c.disabled = true; });
+    [od_esf, od_cil, od_eixo, oe_esf, oe_cil, oe_eixo].forEach(i => { i.value = ''; i.disabled = true; });
+    adicao.value = ''; box_adicao.style.display = 'none';
+
+    resetProductsUI();
+  });
+})();
+</script>
+
+{% endblock %}

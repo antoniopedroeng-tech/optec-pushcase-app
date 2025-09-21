@@ -579,22 +579,29 @@ def _dec(v, default="0"):
 
 @app.post("/api/orcamento/options")
 def api_orcamento_options():
-    # permite admin, comprador, pagador e cliente
+    from decimal import Decimal
+    from sqlalchemy import text
     ret = require_role("admin", "comprador", "pagador", "cliente")
     if ret:
         return ret
 
     data = request.get_json(force=True) or {}
     visao = (data.get("visao") or "").strip()
-    flags = data.get("flags") or {}
-    ar   = bool(flags.get("ar"))
-    ar_i = 1 if ar else 0
-    foto = bool(flags.get("foto"))
-    foto_i = 1 if foto else 0
-    azul = bool(flags.get("azul"))
-    azul_i = 1 if azul else 0
 
-    od = data.get("od") or {}; oe = data.get("oe") or {}
+    flags = data.get("flags") or {}
+    ar_i   = 1 if bool(flags.get("ar"))   else 0
+    foto_i = 1 if bool(flags.get("foto")) else 0
+    azul_i = 1 if bool(flags.get("azul")) else 0
+
+    od = data.get("od") or {}
+    oe = data.get("oe") or {}
+    def _dec(v, default="0"):
+        try:
+            if v in (None, ""): return Decimal(default)
+            return Decimal(str(v).replace(",", "."))
+        except Exception:
+            return Decimal(default)
+
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
     oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
 
@@ -604,85 +611,121 @@ def api_orcamento_options():
       WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
     """)
 
-    def inrng(v, a, b):
+    def in_range(v, a, b):
         a = Decimal(a); b = Decimal(b)
         if a == 0 and b == 0:
             return True
-        lo = min(a,b); hi = max(a,b)
+        lo = min(a, b); hi = max(a, b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
-    products = []
+    od_list, oe_list = [], []
     with engine.begin() as conn:
-        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
-            ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
-            ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
-            if ok_od and ok_oe:
-                products.append({"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)})
+        for r in conn.execute(q, {"visao": visao, "ar": ar_i, "foto": foto_i, "azul": azul_i}).mappings():
+            rec = {"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)}
+            ok_od = in_range(od_esf, r["esf_min"], r["esf_max"]) and in_range(od_cil, r["cil_min"], r["cil_max"])
+            ok_oe = in_range(oe_esf, r["esf_min"], r["esf_max"]) and in_range(oe_cil, r["cil_min"], r["cil_max"])
+            if ok_od:
+                od_list.append(rec)
+            if ok_oe:
+                oe_list.append(rec)
 
-    return {"products": products}
-
+    same = ({p["id"] for p in od_list} == {p["id"] for p in oe_list})
+    return {
+        "same": same,
+        "products": sorted(od_list, key=lambda x: (x["name"], x["id"])) if same else [],
+        "od_products": sorted(od_list, key=lambda x: (x["name"], x["id"])),
+        "oe_products": sorted(oe_list, key=lambda x: (x["name"], x["id"])),
+    }
 @app.post("/api/orcamento/services")
 def api_orcamento_services():
-    ret = require_role("admin","comprador","pagador","cliente")
+    from decimal import Decimal
+    from sqlalchemy import text
+    ret = require_role("admin", "comprador", "pagador", "cliente")
     if ret:
         return ret
 
     data = request.get_json(force=True) or {}
-    pid = int(data.get("product_id"))
 
-    od = data.get("od") or {}; oe = data.get("oe") or {}
+    pids = []
+    if data.get("product_id") is not None:
+        try:
+            pids = [int(data.get("product_id"))]
+        except Exception:
+            pids = []
+    else:
+        for key in ("product_id_od", "product_id_oe"):
+            if data.get(key) is not None:
+                try:
+                    pid = int(data.get(key))
+                    if pid not in pids:
+                        pids.append(pid)
+                except Exception:
+                    pass
+
+    if not pids:
+        return {"mandatory": [], "optional": []}
+
+    od = data.get("od") or {}
+    oe = data.get("oe") or {}
+    def _dec(v, default="0"):
+        try:
+            if v in (None, ""): return Decimal(default)
+            return Decimal(str(v).replace(",", "."))
+        except Exception:
+            return Decimal(default)
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
     oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
 
-    with engine.begin() as conn:
-        ob = conn.execute(text("""
-          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-          FROM orc_produto_serv_obrig o
-          JOIN orc_servico_catalogo c ON c.code=o.serv_code
-          WHERE o.produto_id=:pid
-        """), {"pid": pid}).mappings().all()
-
-        op = conn.execute(text("""
-          SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
-          FROM orc_produto_serv_opc o
-          JOIN orc_servico_catalogo c ON c.code=o.serv_code
-          WHERE o.produto_id=:pid
-        """), {"pid": pid}).mappings().all()
-
-        ac = conn.execute(text("""
-          SELECT a.serv_code, a.esf_min, a.esf_max, a.cil_min, a.cil_max,
-                 COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
-          FROM orc_produto_acrescimo a
-          JOIN orc_servico_catalogo c ON c.code=a.serv_code
-          WHERE a.produto_id=:pid
-        """), {"pid": pid}).mappings().all()
-
     def within(v, a, b):
-        if a is None and b is None: return False
+        if a is None and b is None:
+            return False
         a = Decimal(a) if a is not None else Decimal(v)
         b = Decimal(b) if b is not None else Decimal(v)
-        lo = min(a,b); hi = max(a,b)
+        lo = min(a, b); hi = max(a, b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
-    mandatory = [{"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"])} for r in ob]
+    mand_by_code = {}
+    opt_by_code  = {}
 
-    for a in ac:
-        esf_od_ok = within(od_esf, a["esf_min"], a["esf_max"])
-        cil_od_ok = within(od_cil, a["cil_min"], a["cil_max"])
-        esf_oe_ok = within(oe_esf, a["esf_min"], a["esf_max"])
-        cil_oe_ok = within(oe_cil, a["cil_min"], a["cil_max"])
-        trig_od = (esf_od_ok or cil_od_ok)
-        trig_oe = (esf_oe_ok or cil_oe_ok)
-        if trig_od or trig_oe:
-            mandatory.append({"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "display": a["name"], "price": float(a["price"])})
-    optional = [{"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"])} for r in op]
+    with engine.begin() as conn:
+        for pid in pids:
+            ob = conn.execute(text("""
+              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+              FROM orc_produto_serv_obrig o
+              JOIN orc_servico_catalogo c ON c.code=o.serv_code
+              WHERE o.produto_id=:pid
+            """), {"pid": pid}).mappings().all()
+
+            op = conn.execute(text("""
+              SELECT c.code, COALESCE(c.description,c.code) AS name, COALESCE(c.price,0) AS price
+              FROM orc_produto_serv_opc o
+              JOIN orc_servico_catalogo c ON c.code=o.serv_code
+              WHERE o.produto_id=:pid
+            """), {"pid": pid}).mappings().all()
+
+            ac = conn.execute(text("""
+              SELECT a.serv_code, a.esf_min, a.esf_max, a.cil_min, a.cil_max,
+                     COALESCE(c.description,a.serv_code) AS name, COALESCE(c.price,0) AS price
+              FROM orc_produto_acrescimo a
+              JOIN orc_servico_catalogo c ON c.code=a.serv_code
+              WHERE a.produto_id=:pid
+            """), {"pid": pid}).mappings().all()
+
+            for r in ob:
+                mand_by_code[r["code"]] = {"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"] or 0)}
+
+            for a in ac:
+                trig_od = within(od_esf, a["esf_min"], a["esf_max"]) or within(od_cil, a["cil_min"], a["cil_max"])
+                trig_oe = within(oe_esf, a["esf_min"], a["esf_max"]) or within(oe_cil, a["cil_min"], a["cil_max"])
+                if trig_od or trig_oe:
+                    mand_by_code[a["serv_code"]] = {"id": a["serv_code"], "code": a["serv_code"], "name": a["name"], "display": a["name"], "price": float(a["price"] or 0)}
+
+            for r in op:
+                opt_by_code[r["code"]] = {"id": r["code"], "code": r["code"], "name": r["name"], "display": r["name"], "price": float(r["price"] or 0)}
+
+    mandatory = list(mand_by_code.values())
+    optional  = list(opt_by_code.values())
     return {"mandatory": mandatory, "optional": optional}
-# ================== fim das APIs de Orçamento ==================
-
-
-
-# -------- Admin: Usuários --------
-
 @app.route("/admin/users")
 def admin_users():
     ret = require_role("admin")
@@ -1422,145 +1465,6 @@ def compras_novo():
     products = [dict(p) for p in products]
 
     if request.method == "POST":
-
-# --- Validação de faixa de OS (numérico e dentro do intervalo) ---
-        cfg_min = get_option("os_range_min")
-        cfg_max = get_option("os_range_max")
-        try:
-            os_min_cfg = int(cfg_min) if cfg_min and str(cfg_min).isdigit() else None
-            os_max_cfg = int(cfg_max) if cfg_max and str(cfg_max).isdigit() else None
-        except Exception:
-            os_min_cfg = os_max_cfg = None
-
-        def _validate_os_number(osn: str):
-            if not osn or not str(osn).isdigit():
-                return "O número da OS deve conter apenas dígitos."
-            v = int(osn)
-            if os_min_cfg is not None and v < os_min_cfg:
-                return f"OS fora do intervalo permitido (mínimo {os_min_cfg})."
-            if os_max_cfg is not None and v > os_max_cfg:
-                return f"OS fora do intervalo permitido (máximo {os_max_cfg})."
-            return None        # === NOVO (lote): se vier uma lista JSON completa no campo oculto, processa todos os itens ===
-        raw_payload = (request.form.get("hidden_payload") or "").strip()
-        if raw_payload:
-            try:
-                import json
-                from collections import defaultdict, Counter
-                from sqlalchemy import text as _t
-                payload = json.loads(raw_payload)
-                bulk_items = []
-                for it in (payload or []):
-                    try:
-                        bulk_items.append({
-                            "os_number": str(it.get("os_number","")).strip(),
-                            "product_id": int(it.get("product_id")),
-                            "supplier_id": int(it.get("supplier_id")),
-                            "price": float(it.get("price")),
-                            "tipo": str(it.get("tipo","")).lower(),  # 'lente' ou 'bloco'
-                            "d": {
-                                "sphere": it.get("sphere"),
-                                "cylinder": (None if it.get("cylinder") is None else -abs(float(it.get("cylinder")))),
-                                "base": it.get("base"),
-                                "addition": it.get("addition"),
-                            }
-                        })
-                    except Exception:
-                        pass
-                # validações básicas
-                def _step_ok(x: float) -> bool:
-                    try:
-                        return (abs(float(x) * 100) % 25) == 0
-                    except Exception:
-                        return False
-                def _validate_item(pid, sid, tipo_item, price, d):
-                    rule = db_one("""
-                        SELECT r.*, p.kind as product_kind
-                        FROM rules r JOIN products p ON p.id = r.product_id
-                        WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
-                    """, pid=pid, sid=sid)
-                    if not rule:
-                        return None, None, "Fornecedor indisponível para este produto."
-                    if price is None or price <= 0 or price > float(rule["max_price"]) + 1e-6:
-                        return None, None, f"Preço inválido ou acima do máximo (R$ {float(rule['max_price']):.2f})."
-                    s = d.get("sphere"); c = d.get("cylinder")
-                    if s is None or float(s) < -20 or float(s) > 20 or (not _step_ok(s)):
-                        return None, None, "Esférico inválido (−20 a +20 em passos de 0,25)."
-                    if c is None or float(c) > 0 or float(c) < -15 or (not _step_ok(c)):
-                        return None, None, "Cilíndrico inválido (0 até −15 em passos de 0,25)."
-                    if tipo_item == "lente":
-                        new_pid, new_price, _changed = maybe_swap_lente_by_cylinder(pid, sid, price, c)
-                        return new_pid, new_price, None
-                    else:
-                        return pid, price, None
-                if bulk_items:
-                    # limite 2 por OS ( somando o que já existe )
-                    from collections import Counter
-                    os_new = Counter([it["os_number"] for it in bulk_items if it.get("os_number")])
-                    for osn, add_n in os_new.items():
-                        row = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=osn)
-                        existing_n = int(row["n"] if row else 0)
-                        if existing_n + add_n > 2:
-                            flash(f"OS {osn} excede o limite de 2 unidades.", "error")
-                            return render_template("compras_novo.html", combos=combos, products=products)
-                    validated = []
-                    for it in bulk_items:
-                        err_os = _validate_os_number(it["os_number"])
-                        if err_os:
-                            flash(f"OS {it.get('os_number', '?')}: {err_os}", "error")
-                            return render_template("compras_novo.html", combos=combos, products=products)
-                        pid, price_adj, err = _validate_item(it["product_id"], it["supplier_id"], it["tipo"], it["price"], it["d"])
-                        if err:
-                            flash(f"OS {it['os_number']}: {err}", "error")
-                            return render_template("compras_novo.html", combos=combos, products=products)
-                        validated.append({
-                            "product_id": pid, "supplier_id": it["supplier_id"], "price": price_adj,
-                            "d": it["d"], "os_number": it["os_number"]
-                        })
-                    # cria 1 pedido por fornecedor
-                    by_supplier = defaultdict(list)
-                    for it in validated:
-                        by_supplier[it["supplier_id"]].append(it)
-                    created_orders = []
-                    from datetime import datetime
-                    with engine.begin() as conn:
-                        for sup_id, its in by_supplier.items():
-                            supplier_row = conn.execute(_t("SELECT * FROM suppliers WHERE id=:id"), {"id": sup_id}).mappings().first()
-                            faturado = (supplier_row and (supplier_row.get("billing") or 0) == 1)
-                            total_group = sum(float(i["price"]) for i in its)
-                            status = 'PAGO' if faturado else 'PENDENTE_PAGAMENTO'
-                            os_list = ", ".join(sorted({i["os_number"] for i in its}))
-                            note = f"OS {os_list}"
-                            res = conn.execute(_t("""
-                                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-                                VALUES (:b,:s,:st,:t,:n,:c,:u) RETURNING id
-                            """), {"b": session["user_id"], "s": sup_id, "st": status, "t": total_group, "n": note,
-                                    "c": datetime.utcnow(), "u": datetime.utcnow()})
-                            order_id = res.scalar_one()
-                            for i in its:
-                                conn.execute(_t("""
-                                    INSERT INTO purchase_items (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                                    VALUES (:o,:p,1,:pr,:sf,:cl,:ba,:ad,:os)
-                                """), {"o": order_id, "p": i["product_id"], "pr": i["price"],
-                                        "sf": i["d"].get("sphere"), "cl": i["d"].get("cylinder"),
-                                        "ba": i["d"].get("base"), "ad": i["d"].get("addition"), "os": i["os_number"]})
-                            if faturado:
-                                conn.execute(_t("""
-                                    INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
-                                    VALUES (:o,:p,:m,:r,:d,:a)
-                                """), {"o": order_id, "p": session["user_id"], "m": "FATURADO",
-                                        "r": note, "d": datetime.utcnow(), "a": total_group})
-                            created_orders.append((order_id, faturado))
-                    for oid, fat in created_orders: audit("order_create", f"id={oid} faturado={int(fat)}")
-                    if any(f for _, f in created_orders) and any((not f) for _, f in created_orders):
-                        flash("Pedidos criados: 1 FATURADO (lançado) e 1 PENDENTE (enviado ao pagador).", "success")
-                    elif all(f for _, f in created_orders):
-                        flash("Pedido(s) criado(s) como FATURADO(s) e incluído(s) diretamente no relatório.", "success")
-                    else:
-                        flash("Pedido(s) criado(s) e enviado(s) ao pagador.", "success")
-                    return redirect(url_for("compras_lista"))
-            except Exception as _e:
-                # em qualquer erro de parsing, segue o fluxo original (form simples)
-                pass
         action = (request.form.get("action") or "").strip().lower()
 
         os_number = (request.form.get("os_number") or "").strip()
@@ -2052,66 +1956,3 @@ def extornos_criar(item_id):
     audit("extorno_create", f"item_id={item_id}")
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
-
-# ============== System Options (OS range) ==============
-from sqlalchemy import text as _sys_t
-
-def _ensure_sysopt_table():
-    with engine.begin() as conn:
-        conn.execute(_sys_t("""
-            CREATE TABLE IF NOT EXISTS system_option (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """))
-
-def set_option(key:str, value:str):
-    _ensure_sysopt_table()
-    with engine.begin() as conn:
-        res = conn.execute(_sys_t("UPDATE system_option SET value=:v WHERE key=:k"), {"k": key, "v": str(value)})
-        if res.rowcount == 0:
-            conn.execute(_sys_t("INSERT INTO system_option (key, value) VALUES (:k, :v)"), {"k": key, "v": str(value)})
-
-def get_option(key:str, default=None):
-    _ensure_sysopt_table()
-    with engine.connect() as conn:
-        row = conn.execute(_sys_t("SELECT value FROM system_option WHERE key=:k"), {"k": key}).fetchone()
-        return row[0] if row else default
-
-@app.context_processor
-def inject_cfg():
-    try:
-        vmin = get_option("os_range_min")
-        vmax = get_option("os_range_max")
-        os_min = int(vmin) if vmin and str(vmin).isdigit() else None
-        os_max = int(vmax) if vmax and str(vmax).isdigit() else None
-    except Exception:
-        os_min = os_max = None
-    return {"cfg": {"os_min": os_min, "os_max": os_max}}
-
-@app.post("/admin/import/config")
-def admin_import_config():
-    ret = require_role("admin")
-    if ret: return ret
-    os_min = (request.form.get("os_min") or "").strip()
-    os_max = (request.form.get("os_max") or "").strip()
-
-    def _to_int_or_none(s):
-        s = (s or "").strip()
-        return int(s) if s.isdigit() else None
-
-    vmin = _to_int_or_none(os_min)
-    vmax = _to_int_or_none(os_max)
-
-    if vmin is None or vmax is None:
-        flash("Informe valores numéricos inteiros para o intervalo de OS.", "error")
-        return redirect(url_for("admin_import"))
-
-    if vmin > vmax:
-        vmin, vmax = vmax, vmin
-
-    set_option("os_range_min", str(vmin))
-    set_option("os_range_max", str(vmax))
-    flash(f"Intervalo de OS atualizado: {vmin} a {vmax}.", "success")
-    return redirect(url_for("admin_import"))
-# ============== /System Options (OS range) ==============
