@@ -1467,12 +1467,10 @@ def admin_import_orcamento():
     }
     flash("Importação das regras do orçamento concluída.", "success")
     return redirect(url_for('admin_import'))
+    imp_orcamento = session.pop('imp_orcamento', None)
+    cfg = load_cfg()
+    return render_template("admin_import.html", report=report, imp_orcamento=imp_orcamento, cfg=cfg)
 
-
-
-imp_orcamento = session.pop('imp_orcamento', None)
-cfg = load_cfg()
-return render_template("admin_import.html", report=report, imp_orcamento=imp_orcamento, cfg=cfg)
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
     ret = require_role("comprador","admin")
