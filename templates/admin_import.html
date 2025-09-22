@@ -52,7 +52,6 @@
   <em>Antirreflexo</em>, <em>Fotosensível</em>, <em>Filtro azul</em>, <em>ESF mínimo</em>, <em>ESF máximo</em>,
   <em>CIL mínimo</em>, <em>CIL máximo</em>, <em>Serviços obrigatórios</em>, <em>Serviços disponíveis</em>, <em>Acréscimos</em>.
 </p>
-{% endblock %}
 
 <hr style="margin:32px 0">
 
@@ -67,12 +66,18 @@
         <span>até</span>
         <input type="number" name="os_max" class="form-control" placeholder="Máx." min="0" step="1"
                value="{{ cfg.os_max if (cfg is defined and cfg.os_max is not none) }}">
-        <button class="btn" type="submit">Salvar</button>
+        <button class="btn btn-primary" type="submit">Salvar</button>
       </div>
       <div class="muted" style="margin-top:6px;">
-        Ex.: se configurado como <code>1000–9999</code>, o sistema só aceitará números de OS dentro desse intervalo (apenas dígitos).
+        Ex.: se definir <code>1000–9999</code>, só serão aceitos números de OS nesse intervalo (apenas dígitos).
       </div>
     </div>
   </div>
 </form>
+{% endblock %}
+
+<hr style="margin:20px 0">
+
+<!-- Configurações do Sistema -->
+
 
