@@ -347,6 +347,18 @@ def db_exec(sql, **params):
     with engine.begin() as conn:
         conn.execute(text(sql), params)
 
+
+
+def load_cfg():
+    """Load system configuration (OS limits)."""
+    try:
+        row = db_one("SELECT os_min, os_max FROM system_config LIMIT 1")
+    except Exception:
+        row = None
+    return {
+        "os_min": (row["os_min"] if row and (row.get("os_min") is not None if hasattr(row, "get") else row["os_min"] is not None) else None),
+        "os_max": (row["os_max"] if row and (row.get("os_max") is not None if hasattr(row, "get") else row["os_max"] is not None) else None),
+    }
 def audit(action, details=""):
     u = current_user()
     db_exec("INSERT INTO audit_log (user_id, action, details, created_at) VALUES (:uid,:a,:d,:c)",
@@ -1456,6 +1468,11 @@ def admin_import_orcamento():
     flash("Importação das regras do orçamento concluída.", "success")
     return redirect(url_for('admin_import'))
 
+
+
+imp_orcamento = session.pop('imp_orcamento', None)
+cfg = load_cfg()
+return render_template("admin_import.html", report=report, imp_orcamento=imp_orcamento, cfg=cfg)
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
     ret = require_role("comprador","admin")
@@ -1471,6 +1488,8 @@ def compras_novo():
         ORDER BY s.name, p.kind, p.name
     """)
     products = db_all("SELECT id, name, code, kind FROM products WHERE active=1 ORDER BY kind, name")
+
+    cfg = load_cfg()
 
     combos = [dict(r) for r in combos]
     products = [dict(p) for p in products]
@@ -1492,18 +1511,32 @@ def compras_novo():
 
         if not os_number:
             flash("Informe o número da OS.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+
+
+    if not os_number.isdigit():
+        flash("O número da OS deve conter apenas dígitos.", "error")
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+        if (cfg.get("os_min") is not None and cfg.get("os_max") is not None):
+            try:
+                _os_int = int(os_number)
+                if _os_int < int(cfg["os_min"]) or _os_int > int(cfg["os_max"]):
+                    flash(f"Número de OS fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
+                    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+            except Exception:
+                flash("Número de OS inválido.", "error")
+                return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         existing = db_one("SELECT COUNT(*) AS n FROM purchase_items WHERE os_number=:os", os=os_number)
         existing_n = int(existing["n"] if existing else 0)
 
         if pair_option not in ("meio","par"):
             flash("Selecione se é meio par ou um par.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         if tipo not in ("lente","bloco"):
             flash("Selecione o tipo (lente/bloco).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         if not product_id and product_code:
             p = db_one("SELECT id FROM products WHERE code=:c AND kind=:k AND active=1", c=product_code, k=tipo)
@@ -1512,7 +1545,7 @@ def compras_novo():
 
         if not product_id:
             flash("Selecione o produto (ou informe um código válido).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         rule_main = db_one("""
             SELECT r.*, p.kind as product_kind
@@ -1521,10 +1554,10 @@ def compras_novo():
         """, pid=product_id, sid=supplier_main)
         if not rule_main:
             flash("Fornecedor principal indisponível para este produto.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
         if price_main is None or price_main <= 0 or price_main > float(rule_main["max_price"]) + 1e-6:
             flash(f"Preço do item principal inválido ou acima do máximo (R$ {float(rule_main['max_price']):.2f}).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         def _step_ok(x: float) -> bool:
             return (abs(x * 100) % 25) == 0
@@ -1559,11 +1592,11 @@ def compras_novo():
         if tipo == "lente":
             d1, err = validate_lente("d1")
             if err:
-                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
         else:
             d1, err = validate_bloco("d1")
             if err:
-                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         # Troca automática por cilindro (Item A)
         pid1, price1 = product_id, price_main
@@ -1577,27 +1610,27 @@ def compras_novo():
         if pair_option == "par":
             if supplier_distinto:
                 if not supplier_second:
-                    flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash("Selecione o fornecedor do segundo item.", "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
                 rule_second = db_one("""
                     SELECT r.*, p.kind as product_kind
                     FROM rules r JOIN products p ON p.id = r.product_id
                     WHERE r.product_id=:pid AND r.supplier_id=:sid AND r.active=1
                 """, pid=product_id, sid=supplier_second)
                 if not rule_second:
-                    flash("Fornecedor do segundo item indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash("Fornecedor do segundo item indisponível para este produto.", "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
                 if price_second is None or price_second <= 0 or price_second > float(rule_second["max_price"]) + 1e-6:
-                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash(f"Preço do segundo item inválido ou acima do máximo (R$ {float(rule_second['max_price']):.2f}).", "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
             else:
                 supplier_second, price_second = supplier_main, price_main
 
             if tipo == "lente":
                 d2, err = validate_lente("d2")
                 if err:
-                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
             else:
                 d2, err = validate_bloco("d2")
                 if err:
-                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products)
+                    flash(err, "error"); return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
             # Troca automática por cilindro (Item B)
             pid2, price2 = product_id, price_second
@@ -1610,7 +1643,7 @@ def compras_novo():
 
         if existing_n + len(items_to_add) > 2:
             flash("Cada número de OS só pode ter no máximo um par (2 unidades).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products)
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
         # === CORREÇÃO: criar 1 pedido por fornecedor ===
         from collections import defaultdict
@@ -1668,7 +1701,7 @@ def compras_novo():
 
         return redirect(url_for("compras_lista"))
 
-    return render_template("compras_novo.html", combos=combos, products=products)
+    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
 # -------- Comprador: lista/detalhe --------
 
@@ -1967,3 +2000,25 @@ def extornos_criar(item_id):
     audit("extorno_create", f"item_id={item_id}")
     flash("Extorno registrado como crédito para o fornecedor.", "success")
     return redirect(url_for("extornos_index", date=day))
+
+@app.route("/admin/import/config", methods=["POST"])
+def admin_import_config():
+    ret = require_role("admin")
+    if ret: return ret
+
+    os_min_raw = (request.form.get("os_min") or "").strip()
+    os_max_raw = (request.form.get("os_max") or "").strip()
+
+    os_min = int(os_min_raw) if os_min_raw.isdigit() else None
+    os_max = int(os_max_raw) if os_max_raw.isdigit() else None
+
+    # Ensure table exists
+    db_exec("CREATE TABLE IF NOT EXISTS system_config (id INTEGER PRIMARY KEY, os_min INTEGER, os_max INTEGER)")
+    # Upsert single row id=1
+    db_exec("""
+        INSERT INTO system_config (id, os_min, os_max) VALUES (1, :os_min, :os_max)
+        ON CONFLICT (id) DO UPDATE SET os_min = EXCLUDED.os_min, os_max = EXCLUDED.os_max
+    """, os_min=os_min, os_max=os_max)
+
+    flash("Configurações salvas.", "success")
+    return redirect(url_for('admin_import'))
