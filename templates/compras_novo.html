@@ -24,7 +24,7 @@
     <div class="form-row">
       <div>
         <label>OS</label>
-        <input type="text" name="os_number" id="os_number" class="form-control" required inputmode="numeric" pattern="[0-9]*" placeholder="{{ (cfg.os_min ~  '–'  ~ cfg.os_max) if (cfg is defined and cfg.os_min is not none and cfg.os_max is not none) else \'\' }}">
+        <input type="text" name="os_number" id="os_number" class="form-control" required inputmode="numeric" pattern="[0-9]*" placeholder="{{ (cfg.os_min ~ '–' ~ cfg.os_max) if (cfg is defined and cfg.os_min is not none and cfg.os_max is not none) else '' }}">
       </div>
       <div>
         <label>Par</label><br/>
