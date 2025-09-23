@@ -679,11 +679,11 @@ def api_orcamento_options():
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
     oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
 
-    q = text(\"""
+    q = text("""
       SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
       FROM orc_produto
       WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
-    \""")
+    """)
 
     def inrng(v, a, b):
         # trata colunas preenchidas com 0..0 como "sem limite" (aceita tudo)
