@@ -600,3 +600,37 @@
   init();
 </script>
 {% endblock %}
+
+<script>
+function clearInputs() {
+    const ids = [
+        'product_id', 'supplier_id', 'price', 'tipo',
+        'sphere', 'cylinder', 'base', 'addition', 'os_number'
+    ];
+    ids.forEach(id => {
+        const el = document.getElementById(id) || document.querySelector(`[name="${id}"]`);
+        if (!el) return;
+        if (el.tagName === 'SELECT') {
+            el.selectedIndex = 0;
+        } else if (el.type === 'number' || el.type === 'text') {
+            el.value = '';
+        } else if (el.type === 'checkbox' || el.type === 'radio') {
+            el.checked = false;
+        }
+    });
+    const first = document.getElementById('product_id') || document.querySelector('input,select,textarea');
+    if (first) first.focus();
+}
+</script>
+
+
+<script>
+(function(){
+    var btn = document.getElementById('btn-add') || document.querySelector('[data-action="add-to-list"]');
+    if (btn) {
+        btn.addEventListener('click', function(){
+            try { clearInputs(); } catch(e) {}
+        });
+    }
+})();
+</script>
