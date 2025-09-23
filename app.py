@@ -1518,6 +1518,7 @@ def admin_import_orcamento():
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
+
     ret = require_role("comprador", "admin")
     if ret:
         return ret
@@ -1536,17 +1537,34 @@ def compras_novo():
     combos = [dict(r) for r in combos]
     products = [dict(p) for p in products]
 
+    
     cfg = load_cfg()
 
-    # GET: só renderiza
     if request.method == "GET":
-        
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-# === PATCH: Persistência do POST de compras_novo ===
-if request.method == 'POST':
+    # === POST ===
     form = request.form
     os_number = (form.get("os_number") or "").strip()
 
+    # Validação básica da OS (respeitando limites cfg)
+    if not os_number:
+        flash("Informe o número da OS.", "error")
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+    if not os_number.isdigit():
+        flash("O número da OS deve conter apenas dígitos.", "error")
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+    if (cfg.get("os_min") is not None and cfg.get("os_max") is not None):
+        try:
+            os_int = int(os_number)
+        except ValueError:
+            flash("Número de OS inválido.", "error")
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+        if os_int < int(cfg["os_min"]) or os_int > int(cfg["os_max"]):
+            flash(f"Número de OS fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+
+    # Lê a lista de itens enviada pelo front em hidden_payload (JSON)
     import json
     try:
         payload_raw = form.get("hidden_payload") or "[]"
@@ -1558,7 +1576,7 @@ if request.method == 'POST':
         flash("Nenhum item na lista. Clique em 'Adicionar à lista' antes de enviar.", "error")
         return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-    # Map (product_id, supplier_id) -> max_price com base em combos/rules já carregados
+    # Mapa (product_id, supplier_id) -> max_price a partir de combos/rules
     rules_by_key = {}
     try:
         for r in combos:
@@ -1572,6 +1590,13 @@ if request.method == 'POST':
 
     errs = []
     norm_items = []
+
+    def _f(v):
+        try:
+            return float(v)
+        except Exception:
+            return None
+
     for it in items:
         try:
             pid = int(it.get("product_id") or 0)
@@ -1589,18 +1614,11 @@ if request.method == 'POST':
 
         mx = rules_by_key.get((pid, sid))
         if mx is None:
-            # caso não tenha regra, seguimos mas avisamos. Se preferir, trate como erro.
             errs.append("Produto/fornecedor sem regra ativa.")
             continue
         if price > mx + 1e-9:
             errs.append(f"Valor acima do máximo permitido (R$ {mx:.2f}).")
             continue
-
-        def _f(v):
-            try:
-                return float(v)
-            except Exception:
-                return None
 
         sphere = _f(it.get("sphere"))
         cylinder = _f(it.get("cylinder"))
@@ -1610,7 +1628,7 @@ if request.method == 'POST':
         if cylinder is not None:
             cylinder = -abs(cylinder)
 
-        # Troca automática por cilindro em lentes, se a função existir
+        # Troca automática por cilindro (se disponível) apenas para lentes
         try:
             _maybe = globals().get("maybe_swap_lente_by_cylinder")
             if _maybe and tipo == "lente" and cylinder is not None:
@@ -1684,31 +1702,7 @@ if request.method == 'POST':
 
     flash(f"Criado(s) {len(created_orders)} pedido(s) para a OS {os_number}.", "success")
     return redirect(url_for("compras_lista"))
-# === FIM PATCH ===
-return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-    # POST: lê form e valida OS
-    form = request.form
-    action = (form.get("action") or "").strip().lower()
-
-    os_number = (form.get("os_number") or "").strip()
-    if not os_number:
-        flash("Informe o número da OS.", "error")
-        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-    if not os_number.isdigit():
-        flash("O número da OS deve conter apenas dígitos.", "error")
-        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-    if (cfg.get("os_min") is not None and cfg.get("os_max") is not None):
-        try:
-            os_int = int(os_number)
-        except ValueError:
-            flash("Número de OS inválido.", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-        if os_int < int(cfg["os_min"]) or os_int > int(cfg["os_max"]):
-            flash(f"Número de OS fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-
-    # TODO: continue aqui com a lógica já existente (seleção de produto/fornecedor, persistência, etc.)
 @app.route("/compras")
 def compras_lista():
     ret = require_role("comprador","admin")
