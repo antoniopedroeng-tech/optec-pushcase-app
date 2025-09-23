@@ -658,42 +658,62 @@ def api_orcamento_options():
     if ret:
         return ret
 
+    from decimal import Decimal
     data = request.get_json(force=True) or {}
     visao = (data.get("visao") or "").strip()
+
     flags = data.get("flags") or {}
-    ar   = bool(flags.get("ar"))
-    ar_i = 1 if ar else 0
-    foto = bool(flags.get("foto"))
-    foto_i = 1 if foto else 0
-    azul = bool(flags.get("azul"))
-    azul_i = 1 if azul else 0
+    ar_i   = 1 if bool(flags.get("ar"))   else 0
+    foto_i = 1 if bool(flags.get("foto")) else 0
+    azul_i = 1 if bool(flags.get("azul")) else 0
+
+    def _dec(v, default="0"):
+        try:
+            if v in (None, ""):
+                return Decimal(default)
+            return Decimal(str(v).replace(",", "."))
+        except Exception:
+            return Decimal(default)
 
     od = data.get("od") or {}; oe = data.get("oe") or {}
     od_esf = _dec(od.get("esf")); od_cil = _dec(od.get("cil"))
     oe_esf = _dec(oe.get("esf")); oe_cil = _dec(oe.get("cil"))
 
-    q = text("""
+    q = text(\"""
       SELECT id, name, price, esf_min, esf_max, cil_min, cil_max
       FROM orc_produto
       WHERE visao=:visao AND ar=:ar AND foto=:foto AND azul=:azul
-    """)
+    \""")
 
     def inrng(v, a, b):
+        # trata colunas preenchidas com 0..0 como "sem limite" (aceita tudo)
         a = Decimal(a); b = Decimal(b)
         if a == 0 and b == 0:
             return True
-        lo = min(a,b); hi = max(a,b)
+        lo = min(a, b); hi = max(a, b)
         return Decimal(v) >= lo and Decimal(v) <= hi
 
-    products = []
-    with engine.begin() as conn:
-        for r in conn.execute(q, {"visao":visao,"ar":ar_i,"foto":foto_i,"azul":azul_i}).mappings():
-            ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
-            ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
-            if ok_od and ok_oe:
-                products.append({"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0)})
+    common, lst_od, lst_oe = [], [], []
 
-    return {"products": products}
+    with engine.begin() as conn:
+        rows = conn.execute(q, {"visao": visao, "ar": ar_i, "foto": foto_i, "azul": azul_i}).mappings().all()
+
+    for r in rows:
+        p = {"id": int(r["id"]), "name": r["name"], "price": float(r["price"] or 0.0)}
+        ok_od = inrng(od_esf, r["esf_min"], r["esf_max"]) and inrng(od_cil, r["cil_min"], r["cil_max"])
+        ok_oe = inrng(oe_esf, r["esf_min"], r["esf_max"]) and inrng(oe_cil, r["cil_min"], r["cil_max"])
+
+        if ok_od:
+            lst_od.append(p)
+        if ok_oe:
+            lst_oe.append(p)
+        if ok_od and ok_oe:
+            common.append(p)
+
+    if common:
+        return {"same": True, "products": common}
+    else:
+        return {"same": False, "od_products": lst_od, "oe_products": lst_oe}
 
 @app.post("/api/orcamento/services")
 def api_orcamento_services():
