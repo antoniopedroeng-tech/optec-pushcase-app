@@ -1647,26 +1647,45 @@ def pagamentos_detalhe(oid):
         reference = (request.form.get("reference") or "").strip()
         amount = request.form.get("amount", type=float)
         if amount is None or amount <= 0:
-
-# Regra: OS no máximo 2 usos também na etapa de pagamento
-os_list = db_all("""
-    SELECT DISTINCT i.os_number
-    FROM purchase_items i
-    WHERE i.order_id = :id AND i.os_number IS NOT NULL AND i.os_number <> ''
-""", id=oid)
-for row in os_list:
-    osn = row.get("os_number")
-    if not osn: continue
-    cnt = db_one("""
-        SELECT COUNT(DISTINCT order_id) AS c
-        FROM purchase_items
-        WHERE os_number = :os
-    """, os=osn)
-    used = int(cnt.get("c", 0)) if cnt else 0
-    if used > 2:
-        flash(f"Número de OS {osn} já foi utilizado {used} vez(es). Limite máximo: 2.", "error")
-        return render_template("pagamentos_detalhe.html", order=order, items=items)
             flash("Valor inválido.", "error"); return render_template("pagamentos_detalhe.html", order=order, items=items)
+
+        # Checagem: OS no máximo 2 usos também no pagamento
+
+        os_list = db_all("""
+
+            SELECT DISTINCT i.os_number
+
+            FROM purchase_items i
+
+            WHERE i.order_id = :id AND i.os_number IS NOT NULL AND i.os_number <> ''
+
+        """, id=oid)
+
+        for row in os_list:
+
+            osn = row.get("os_number")
+
+            if not osn:
+
+                continue
+
+            cnt = db_one("""
+
+                SELECT COUNT(DISTINCT order_id) AS c
+
+                FROM purchase_items
+
+                WHERE os_number = :os
+
+            """, os=osn)
+
+            used = int(cnt.get("c", 0)) if cnt else 0
+
+            if used > 2:
+
+                flash(f"Número de OS {osn} já foi utilizado {used} vez(es). Limite máximo: 2.", "error")
+
+                return render_template("pagamentos_detalhe.html", order=order, items=items)
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
