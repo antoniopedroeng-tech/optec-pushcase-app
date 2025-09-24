@@ -1563,7 +1563,156 @@ def compras_novo():
             flash(f"Número de OS fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
             return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-    # TODO: continue aqui com a lógica já existente (seleção de produto/fornecedor, persistência, etc.)
+# === Persistência do POST de compras_novo ===
+import json
+try:
+    payload_raw = form.get("hidden_payload") or "[]"
+    items = json.loads(payload_raw)
+except Exception:
+    items = []
+
+if not items:
+    flash("Nenhum item na lista. Clique em 'Adicionar à lista' antes de enviar.", "error")
+    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+
+# Mapa produto+fornecedor -> preço máximo permitido
+rules_by_key = {}
+try:
+    for r in combos:
+        pid = int(r.get("product_id"))
+        sid = int(r.get("supplier_id"))
+        mx = float(r.get("max_price"))
+        rules_by_key[(pid, sid)] = mx
+except Exception:
+    pass
+
+errs = []
+norm_items = []
+for it in items:
+    try:
+        pid = int(it.get("product_id") or 0)
+        sid = int(it.get("supplier_id") or 0)
+        price = float(str(it.get("price") or "0").replace(',', '.'))
+    except Exception:
+        pid = sid = 0
+        price = 0.0
+
+    tipo = (it.get("tipo") or "").strip().lower()
+
+    if not pid or not sid or price <= 0:
+        errs.append("Item inválido (produto/fornecedor/valor).")
+        continue
+
+    mx = rules_by_key.get((pid, sid))
+    if mx is None:
+        errs.append("Produto/fornecedor sem regra ativa.")
+        continue
+    if price > mx + 1e-9:
+        errs.append(f"Valor acima do máximo permitido (R$ {mx:.2f}).")
+        continue
+
+    def _f(v):
+        try:
+            return float(str(v).replace(',', '.'))
+        except Exception:
+            return None
+
+    sphere = _f(it.get("sphere"))
+    cylinder = _f(it.get("cylinder"))
+    base = _f(it.get("base"))
+    addition = _f(it.get("addition"))
+
+    if cylinder is not None:
+        cylinder = -abs(cylinder)
+
+    # Troca automática por cilindro em lentes, se a função existir
+    try:
+        _maybe = globals().get("maybe_swap_lente_by_cylinder")
+        if _maybe and tipo == "lente" and cylinder is not None:
+            new_pid, new_price, _swap_names = _maybe(pid, sid, price, cylinder)
+            mx2 = rules_by_key.get((new_pid, sid))
+            if mx2 is not None and new_price <= mx2 + 1e-9:
+                pid, price = new_pid, new_price
+    except Exception:
+        pass
+
+    norm_items.append({
+        "supplier_id": sid,
+        "product_id": pid,
+        "unit_price": price,
+        "quantity": 1,
+        "sphere": sphere,
+        "cylinder": cylinder,
+        "base": base,
+        "addition": addition,
+        "os_number": os_number,
+    })
+
+if errs or not norm_items:
+    if not norm_items and not errs:
+        errs.append("Nenhum item válido após validação.")
+    for e in errs:
+        flash(e, "error")
+    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+
+from collections import defaultdict
+groups = defaultdict(list)
+for it in norm_items:
+    groups[it["supplier_id"]].append(it)
+
+# Regra: OS pode ser usada no máximo 2 vezes (contando pedidos distintos)
+if os_number:
+    with engine.connect() as _conn_chk:
+        existing_count = _conn_chk.execute(text("""
+            SELECT COUNT(DISTINCT order_id)
+            FROM purchase_items
+            WHERE os_number = :os
+        """), {"os": os_number}).scalar() or 0
+    proposed = len(groups)
+    if existing_count + proposed > 2:
+        flash(f"Número de OS {os_number} já utilizado {existing_count} vez(es). Limite máximo: 2.", "error")
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+
+now = datetime.utcnow()
+created_orders = []
+
+with engine.begin() as conn:
+    for sid, group in groups.items():
+        total = sum((g["unit_price"] * g["quantity"]) for g in group)
+        oid = conn.execute(text("""
+            INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+            VALUES (:buyer, :supplier, 'PENDENTE_PAGAMENTO', :total, :note, :c, :u)
+            RETURNING id
+        """), {
+            "buyer": session["user_id"],
+            "supplier": sid,
+            "total": total,
+            "note": None,
+            "c": now,
+            "u": now
+        }).scalar_one()
+
+        for g in group:
+            conn.execute(text("""
+                INSERT INTO purchase_items
+                (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                VALUES (:o, :p, :q, :up, :sph, :cil, :base, :add, :os)
+            """), {
+                "o": oid, "p": g["product_id"], "q": g["quantity"], "up": g["unit_price"],
+                "sph": g["sphere"], "cil": g["cylinder"], "base": g["base"], "add": g["addition"],
+                "os": g["os_number"]
+            })
+
+        created_orders.append(oid)
+
+try:
+    audit("orders_create", f"count={len(created_orders)} os={os_number}")
+except Exception:
+    pass
+
+flash(f"Criado(s) {len(created_orders)} pedido(s) para a OS {os_number}.", "success")
+return redirect(url_for("compras_lista"))
+# === FIM Persistência ===
 @app.route("/compras")
 def compras_lista():
     ret = require_role("comprador","admin")
@@ -1648,44 +1797,6 @@ def pagamentos_detalhe(oid):
         amount = request.form.get("amount", type=float)
         if amount is None or amount <= 0:
             flash("Valor inválido.", "error"); return render_template("pagamentos_detalhe.html", order=order, items=items)
-
-        # Checagem: OS no máximo 2 usos também no pagamento
-
-        os_list = db_all("""
-
-            SELECT DISTINCT i.os_number
-
-            FROM purchase_items i
-
-            WHERE i.order_id = :id AND i.os_number IS NOT NULL AND i.os_number <> ''
-
-        """, id=oid)
-
-        for row in os_list:
-
-            osn = row.get("os_number")
-
-            if not osn:
-
-                continue
-
-            cnt = db_one("""
-
-                SELECT COUNT(DISTINCT order_id) AS c
-
-                FROM purchase_items
-
-                WHERE os_number = :os
-
-            """, os=osn)
-
-            used = int(cnt.get("c", 0)) if cnt else 0
-
-            if used > 2:
-
-                flash(f"Número de OS {osn} já foi utilizado {used} vez(es). Limite máximo: 2.", "error")
-
-                return render_template("pagamentos_detalhe.html", order=order, items=items)
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO payments (order_id, payer_id, method, reference, paid_at, amount)
