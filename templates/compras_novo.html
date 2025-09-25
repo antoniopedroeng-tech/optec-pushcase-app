@@ -1,98 +1,153 @@
 {% extends "base.html" %}
 {% block title %}Novo Pedido<script>
-function clearInputs() {
+// ==== Helpers de OS (globais) ====
+window.cfgOS = {{ (cfg or {}) | tojson }};
+window.osDentroDoIntervalo = function(osStr) {
+  if (!osStr || !/^\d+$/.test(osStr)) return false;
+  const n = Number(osStr);
+  if (window.cfgOS && window.cfgOS.os_min != null && window.cfgOS.os_max != null) {
+    return n >= Number(window.cfgOS.os_min) && n <= Number(window.cfgOS.os_max);
+  }
+  return true;
+};
+window.osJaNaListaCount = function(osStr) {
+  return (typeof window.pendingItems !== 'undefined')
+    ? window.pendingItems.filter(it => String(it.os_number) === String(osStr)).length
+    : 0;
+};
+
+// ==== Limpeza (global) ====
+window.clearInputs = function() {
   const form = document.getElementById('pedidoForm') || document.querySelector('form');
 
-  // 1) Limpa TODOS os campos editáveis dentro do formulário
   if (form) {
     form.querySelectorAll('input, select, textarea').forEach(el => {
       if (el.disabled) return;
-
       const type = (el.getAttribute('type') || el.type || '').toLowerCase();
       const tag = el.tagName.toLowerCase();
-      const name = el.getAttribute('name') || '';
-      const id = el.id || '';
-
-      // pular campos de controle/hidden
       if (type === 'hidden') return;
-      if (['hidden_payload', 'csrf_token'].includes(id)) return;
+      if (['hidden_payload','csrf_token'].includes(el.id)) return;
 
-      // radios: desmarca todos, depois marcamos "meio" explicitamente
-      if (type === 'radio') {
-        el.checked = false;
-        return;
-      }
-      // checkbox
-      if (type === 'checkbox') {
-        el.checked = false;
-        return;
-      }
-      // selects
+      if (type === 'radio' || type === 'checkbox') { el.checked = false; return; }
       if (tag === 'select') {
-        // se existir uma opção vazia, seleciona. Senão, volta pra primeira opção
-        const emptyOption = Array.from(el.options).find(o => o.value === '' || o.value == null);
-        if (emptyOption) {
-          el.value = '';
-        } else {
-          el.selectedIndex = 0;
-        }
-        el.dispatchEvent(new Event('change'));
-        return;
+        const empty = Array.from(el.options).find(o => o.value === '' || o.value == null);
+        el.value = empty ? '' : (el.options.length ? el.options[0].value : '');
+        el.dispatchEvent(new Event('change')); return;
       }
-      // inputs text/number/etc e textareas
-      if (['text','number','tel','email','search','url','password',''].includes(type) or tag == 'textarea'):
-          el.value = '';
-          el.dispatchEvent(new Event('input'));
-          el.dispatchEvent(new Event('change'));
-          return;
-      try { el.value = ''; } catch(e) {}
+      el.value = '';
+      el.dispatchEvent(new Event('input'));
+      el.dispatchEvent(new Event('change'));
     });
   }
 
-  // 2) Ajusta defaults específicos da tela
-  // Tipo
   const tipo = document.getElementById('tipo');
   if (tipo) { tipo.value = 'lente'; tipo.dispatchEvent(new Event('change')); }
 
-  // Produto
   const product = document.getElementById('product_code') || document.getElementById('productSelect');
   if (product) { product.value = ''; product.dispatchEvent(new Event('change')); }
 
-  // Fornecedores
   const supplierDistinct = document.getElementById('supplier_distinct');
   if (supplierDistinct) supplierDistinct.checked = false;
+
   const suppA = document.getElementById('supplier_main') || document.getElementById('suppMain');
   if (suppA) { suppA.value = ''; suppA.dispatchEvent(new Event('change')); }
   const suppB = document.getElementById('supplier_second') || document.getElementById('suppSecond');
   if (suppB) { suppB.value = ''; suppB.dispatchEvent(new Event('change')); }
 
-  // Valores
   const priceA = document.getElementById('price_main');
   if (priceA) { priceA.value = ''; priceA.dispatchEvent(new Event('input')); }
   const priceB = document.getElementById('price_second');
   if (priceB) { priceB.value = ''; priceB.dispatchEvent(new Event('input')); }
 
-  // Par/meio par
   const radioMeio = document.querySelector('input[name="pair_option"][value="meio"]');
   if (radioMeio) { radioMeio.checked = true; radioMeio.dispatchEvent(new Event('change')); }
 
-  // Esconde bloco B
   const blocoB = document.getElementById('block_B');
   if (blocoB) blocoB.classList.add('d-none');
 
-  // 3) Dioptrias/bases (garantir que foram limpos)
-  [
-    'd1_sphere','d1_cylinder','d1_addition','d1_base',
-    'd2_sphere','d2_cylinder','d2_addition','d2_base'
-  ].forEach(n => {
-    const el = document.querySelector(`[name="${n}"]`) || document.getElementById(n);
-    if (el) { el.value = ''; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); }
-  });
+  ['d1_sphere','d1_cylinder','d1_addition','d1_base','d2_sphere','d2_cylinder','d2_addition','d2_base']
+    .forEach(n => {
+      const el = document.querySelector(`[name="${n}"]`) || document.getElementById(n);
+      if (el) { el.value = ''; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); }
+    });
 
-  // 4) Recarrega dicas/combos se existirem
-  try { if (typeof refreshProductsByTipo === 'function') refreshProductsByTipo(); } catch(e){}
-  try { if (typeof refreshHints === 'function') refreshHints(); } catch(e){}
-}
+  try { if (typeof window.refreshProductsByTipo === 'function') window.refreshProductsByTipo(); } catch(e){}
+  try { if (typeof window.refreshHints === 'function') window.refreshHints(); } catch(e){}
+};
+
+// ==== Handler principal do botão (chama clearInputs no sucesso) ====
+document.getElementById('add_to_list').addEventListener('click', () => {
+  const os = document.getElementById('os_number').value.trim();
+
+  if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
+  if (!window.osDentroDoIntervalo(os)) {
+    alert(`OS fora do intervalo permitido (${window.cfgOS.os_min}–${window.cfgOS.os_max}).`);
+    return;
+  }
+
+  const isParCheck = document.querySelector('input[name="pair_option"]:checked')?.value === 'par';
+  const linhasNovas = isParCheck ? 2 : 1;
+  const jaTem = window.osJaNaListaCount(os);
+  if (jaTem + linhasNovas > 2) {
+    alert('Esta OS já atingiu o limite máximo (2 linhas no total).');
+    return;
+  }
+
+  const pid = productSelect.value;
+  if (!pid) { alert('Selecione um produto.'); return; }
+  if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
+
+  const preco1 = parseFloat(priceMain.value || '0');
+  if (!preco1 || preco1 <= 0) { alert('Informe o valor (A).'); return; }
+  if (priceExceedsMax(pid, suppMain.value, preco1)) {
+    alert('Valor (A) acima do máximo permitido para este produto/fornecedor.');
+    return;
+  }
+
+  const dA = buildA();
+  addRow({
+    os,
+    tipo: tipoSel.value,
+    produto: currentProductName(),
+    fornecedor: currentSupplierName(suppMain),
+    d: dA,
+    preco: preco1
+  });
+  pendingItems.push(makeItemPayload(os, tipoSel.value, pid, suppMain.value, preco1, dA));
+
+  if (isParCheck) {
+    let fornecedor2 = currentSupplierName(suppMain);
+    let preco2 = preco1;
+    let sid2 = suppMain.value;
+
+    if (supplierDistinto.checked) {
+      if (!suppSecond.value) { alert('Selecione o fornecedor (B).'); return; }
+      fornecedor2 = currentSupplierName(suppSecond);
+      sid2 = suppSecond.value;
+      const p2 = parseFloat(priceSecond.value || '0');
+      if (!p2 || p2 <= 0) { alert('Informe o valor (B).'); return; }
+      if (priceExceedsMax(pid, sid2, p2)) {
+        alert('Valor (B) acima do máximo permitido para este produto/fornecedor.');
+        return;
+      }
+      preco2 = p2;
+    }
+
+    const dB = buildB();
+    addRow({
+      os,
+      tipo: tipoSel.value,
+      produto: currentProductName(),
+      fornecedor: fornecedor2,
+      d: dB,
+      preco: preco2
+    });
+    pendingItems.push(makeItemPayload(os, tipoSel.value, pid, sid2, preco2, dB));
+  }
+
+  recomputeTotal();
+  try { window.clearInputs(); } catch(e) {}
+});
 </script>
 {% endblock %}
 {% block content %}
@@ -696,99 +751,154 @@ function clearInputs() {
   init();
 </script>
 <script>
-function clearInputs() {
+// ==== Helpers de OS (globais) ====
+window.cfgOS = {{ (cfg or {}) | tojson }};
+window.osDentroDoIntervalo = function(osStr) {
+  if (!osStr || !/^\d+$/.test(osStr)) return false;
+  const n = Number(osStr);
+  if (window.cfgOS && window.cfgOS.os_min != null && window.cfgOS.os_max != null) {
+    return n >= Number(window.cfgOS.os_min) && n <= Number(window.cfgOS.os_max);
+  }
+  return true;
+};
+window.osJaNaListaCount = function(osStr) {
+  return (typeof window.pendingItems !== 'undefined')
+    ? window.pendingItems.filter(it => String(it.os_number) === String(osStr)).length
+    : 0;
+};
+
+// ==== Limpeza (global) ====
+window.clearInputs = function() {
   const form = document.getElementById('pedidoForm') || document.querySelector('form');
 
-  // 1) Limpa TODOS os campos editáveis dentro do formulário
   if (form) {
     form.querySelectorAll('input, select, textarea').forEach(el => {
       if (el.disabled) return;
-
       const type = (el.getAttribute('type') || el.type || '').toLowerCase();
       const tag = el.tagName.toLowerCase();
-      const name = el.getAttribute('name') || '';
-      const id = el.id || '';
-
-      // pular campos de controle/hidden
       if (type === 'hidden') return;
-      if (['hidden_payload', 'csrf_token'].includes(id)) return;
+      if (['hidden_payload','csrf_token'].includes(el.id)) return;
 
-      // radios: desmarca todos, depois marcamos "meio" explicitamente
-      if (type === 'radio') {
-        el.checked = false;
-        return;
-      }
-      // checkbox
-      if (type === 'checkbox') {
-        el.checked = false;
-        return;
-      }
-      // selects
+      if (type === 'radio' || type === 'checkbox') { el.checked = false; return; }
       if (tag === 'select') {
-        // se existir uma opção vazia, seleciona. Senão, volta pra primeira opção
-        const emptyOption = Array.from(el.options).find(o => o.value === '' || o.value == null);
-        if (emptyOption) {
-          el.value = '';
-        } else {
-          el.selectedIndex = 0;
-        }
-        el.dispatchEvent(new Event('change'));
-        return;
+        const empty = Array.from(el.options).find(o => o.value === '' || o.value == null);
+        el.value = empty ? '' : (el.options.length ? el.options[0].value : '');
+        el.dispatchEvent(new Event('change')); return;
       }
-      // inputs text/number/etc e textareas
-      if (['text','number','tel','email','search','url','password',''].includes(type) or tag == 'textarea'):
-          el.value = '';
-          el.dispatchEvent(new Event('input'));
-          el.dispatchEvent(new Event('change'));
-          return;
-      try { el.value = ''; } catch(e) {}
+      el.value = '';
+      el.dispatchEvent(new Event('input'));
+      el.dispatchEvent(new Event('change'));
     });
   }
 
-  // 2) Ajusta defaults específicos da tela
-  // Tipo
   const tipo = document.getElementById('tipo');
   if (tipo) { tipo.value = 'lente'; tipo.dispatchEvent(new Event('change')); }
 
-  // Produto
   const product = document.getElementById('product_code') || document.getElementById('productSelect');
   if (product) { product.value = ''; product.dispatchEvent(new Event('change')); }
 
-  // Fornecedores
   const supplierDistinct = document.getElementById('supplier_distinct');
   if (supplierDistinct) supplierDistinct.checked = false;
+
   const suppA = document.getElementById('supplier_main') || document.getElementById('suppMain');
   if (suppA) { suppA.value = ''; suppA.dispatchEvent(new Event('change')); }
   const suppB = document.getElementById('supplier_second') || document.getElementById('suppSecond');
   if (suppB) { suppB.value = ''; suppB.dispatchEvent(new Event('change')); }
 
-  // Valores
   const priceA = document.getElementById('price_main');
   if (priceA) { priceA.value = ''; priceA.dispatchEvent(new Event('input')); }
   const priceB = document.getElementById('price_second');
   if (priceB) { priceB.value = ''; priceB.dispatchEvent(new Event('input')); }
 
-  // Par/meio par
   const radioMeio = document.querySelector('input[name="pair_option"][value="meio"]');
   if (radioMeio) { radioMeio.checked = true; radioMeio.dispatchEvent(new Event('change')); }
 
-  // Esconde bloco B
   const blocoB = document.getElementById('block_B');
   if (blocoB) blocoB.classList.add('d-none');
 
-  // 3) Dioptrias/bases (garantir que foram limpos)
-  [
-    'd1_sphere','d1_cylinder','d1_addition','d1_base',
-    'd2_sphere','d2_cylinder','d2_addition','d2_base'
-  ].forEach(n => {
-    const el = document.querySelector(`[name="${n}"]`) || document.getElementById(n);
-    if (el) { el.value = ''; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); }
-  });
+  ['d1_sphere','d1_cylinder','d1_addition','d1_base','d2_sphere','d2_cylinder','d2_addition','d2_base']
+    .forEach(n => {
+      const el = document.querySelector(`[name="${n}"]`) || document.getElementById(n);
+      if (el) { el.value = ''; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); }
+    });
 
-  // 4) Recarrega dicas/combos se existirem
-  try { if (typeof refreshProductsByTipo === 'function') refreshProductsByTipo(); } catch(e){}
-  try { if (typeof refreshHints === 'function') refreshHints(); } catch(e){}
-}
+  try { if (typeof window.refreshProductsByTipo === 'function') window.refreshProductsByTipo(); } catch(e){}
+  try { if (typeof window.refreshHints === 'function') window.refreshHints(); } catch(e){}
+};
+
+// ==== Handler principal do botão (chama clearInputs no sucesso) ====
+document.getElementById('add_to_list').addEventListener('click', () => {
+  const os = document.getElementById('os_number').value.trim();
+
+  if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
+  if (!window.osDentroDoIntervalo(os)) {
+    alert(`OS fora do intervalo permitido (${window.cfgOS.os_min}–${window.cfgOS.os_max}).`);
+    return;
+  }
+
+  const isParCheck = document.querySelector('input[name="pair_option"]:checked')?.value === 'par';
+  const linhasNovas = isParCheck ? 2 : 1;
+  const jaTem = window.osJaNaListaCount(os);
+  if (jaTem + linhasNovas > 2) {
+    alert('Esta OS já atingiu o limite máximo (2 linhas no total).');
+    return;
+  }
+
+  const pid = productSelect.value;
+  if (!pid) { alert('Selecione um produto.'); return; }
+  if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
+
+  const preco1 = parseFloat(priceMain.value || '0');
+  if (!preco1 || preco1 <= 0) { alert('Informe o valor (A).'); return; }
+  if (priceExceedsMax(pid, suppMain.value, preco1)) {
+    alert('Valor (A) acima do máximo permitido para este produto/fornecedor.');
+    return;
+  }
+
+  const dA = buildA();
+  addRow({
+    os,
+    tipo: tipoSel.value,
+    produto: currentProductName(),
+    fornecedor: currentSupplierName(suppMain),
+    d: dA,
+    preco: preco1
+  });
+  pendingItems.push(makeItemPayload(os, tipoSel.value, pid, suppMain.value, preco1, dA));
+
+  if (isParCheck) {
+    let fornecedor2 = currentSupplierName(suppMain);
+    let preco2 = preco1;
+    let sid2 = suppMain.value;
+
+    if (supplierDistinto.checked) {
+      if (!suppSecond.value) { alert('Selecione o fornecedor (B).'); return; }
+      fornecedor2 = currentSupplierName(suppSecond);
+      sid2 = suppSecond.value;
+      const p2 = parseFloat(priceSecond.value || '0');
+      if (!p2 || p2 <= 0) { alert('Informe o valor (B).'); return; }
+      if (priceExceedsMax(pid, sid2, p2)) {
+        alert('Valor (B) acima do máximo permitido para este produto/fornecedor.');
+        return;
+      }
+      preco2 = p2;
+    }
+
+    const dB = buildB();
+    addRow({
+      os,
+      tipo: tipoSel.value,
+      produto: currentProductName(),
+      fornecedor: fornecedor2,
+      d: dB,
+      preco: preco2
+    });
+    pendingItems.push(makeItemPayload(os, tipoSel.value, pid, sid2, preco2, dB));
+  }
+
+  recomputeTotal();
+  try { window.clearInputs(); } catch(e) {}
+});
 </script>
 {% endblock %}
 
@@ -845,12 +955,3 @@ function clearInputs() {
 </script>
 
 
-<script>
-(function(){
-  const btn = document.getElementById('add_to_list');
-  if (!btn) return;
-  btn.addEventListener('click', function(){
-    setTimeout(function(){ try { clearInputs(); } catch(e){} }, 0);
-  });
-})();
-</script>
