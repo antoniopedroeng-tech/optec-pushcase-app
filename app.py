@@ -1576,47 +1576,7 @@ def compras_novo():
         flash("Nenhum item na lista. Clique em 'Adicionar à lista' antes de enviar.", "error")
         return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-    
-    # --- Validação de OS por item + teto de 2 linhas por OS (payload + banco) ---
-    from collections import Counter
-    distinct_os = []
-    for it in items:
-        os_i = str(it.get("os_number") or "").strip()
-        os_i = str(it.get("os_number") or "").strip()
-        if not os_i.isdigit():
-            flash("Número de OS inválido em um dos itens (apenas dígitos).", "error")
-            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-        if cfg.get("os_min") is not None and cfg.get("os_max") is not None:
-            os_int = int(os_i)
-            if not (int(cfg["os_min"]) <= os_int <= int(cfg["os_max"])):
-                flash(f"OS {os_i} fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
-                return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-        distinct_os.append(os_i)
-
-    payload_counts = Counter(distinct_os)
-
-    existing_counts = {}
-    if distinct_os:
-        placeholders = ",".join([f":os{i}" for i, _ in enumerate(set(distinct_os))])
-        params = {f"os{i}": v for i, v in enumerate(set(distinct_os))}
-        rows = db_all(f\"\"\"
-            SELECT os_number, COUNT(*) AS n
-            FROM purchase_items
-            WHERE os_number IN ({placeholders})
-            GROUP BY os_number
-        \"\"\", **params)
-        for r in rows:
-            existing_counts[str(r["os_number"])] = int(r["n"] or 0)
-
-    violadas = []
-    for os_i, qtd_novas in payload_counts.items():
-        total = qtd_novas + int(existing_counts.get(os_i, 0))
-        if total > 2:
-            violadas.append(f"{os_i} (total tentado: {total})")
-    if violadas:
-        flash("Limite excedido para as seguintes OS (máximo 2 linhas no total): " + ", ".join(violadas), "error")
-        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-# Mapa produto+fornecedor -> preço máximo permitido
+    # Mapa produto+fornecedor -> preço máximo permitido
     rules_by_key = {}
     try:
         for r in combos:
@@ -1630,7 +1590,6 @@ def compras_novo():
     errs = []
     norm_items = []
     for it in items:
-        os_i = str(it.get("os_number") or "").strip()
         try:
             pid = int(it.get("product_id") or 0)
             sid = int(it.get("supplier_id") or 0)
@@ -1687,7 +1646,7 @@ def compras_novo():
             "cylinder": cylinder,
             "base": base,
             "addition": addition,
-            "os_number": os_i,
+            "os_number": os_number,
         })
 
     if errs or not norm_items:
