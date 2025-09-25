@@ -530,6 +530,7 @@
       pendingItems.push(makeItemPayload(os, tipoSel.value, pid, sid2, preco2, dB));
     }
     recomputeTotal();
+    clearInputs();
   });
 
   document.getElementById('clear_list').addEventListener('click', () => {
@@ -600,3 +601,18 @@
   init();
 </script>
 {% endblock %}
+
+<script>
+function clearInputs() {
+  const ids = ['os_number','tipo','product_id','product_code','supplier_main','supplier_second','price_main','price_second','sphere_a','cylinder_a','base_a','addition_a','sphere_b','cylinder_b','base_b','addition_b'];
+  ids.forEach(id => {
+    const el = document.getElementById(id) || document.querySelector(`[name="${id}"]`);
+    if (!el) return;
+    if (el.tagName === 'SELECT') el.selectedIndex = 0;
+    else if (el.type === 'number' || el.type === 'text') el.value = '';
+    else if (el.type === 'checkbox' || el.type === 'radio') el.checked = false;
+  });
+  const first = document.getElementById('os_number') || document.querySelector('input,select,textarea');
+  if (first) first.focus();
+}
+</script>

@@ -602,17 +602,74 @@
 </script>
 {% endblock %}
 
+
+
+
 <script>
 function clearInputs() {
-  const ids = ['os_number','tipo','product_id','product_code','supplier_main','supplier_second','price_main','price_second','sphere_a','cylinder_a','base_a','addition_a','sphere_b','cylinder_b','base_b','addition_b'];
-  ids.forEach(id => {
-    const el = document.getElementById(id) || document.querySelector(`[name="${id}"]`);
-    if (!el) return;
-    if (el.tagName === 'SELECT') el.selectedIndex = 0;
-    else if (el.type === 'number' || el.type === 'text') el.value = '';
-    else if (el.type === 'checkbox' || el.type === 'radio') el.checked = false;
+  // OS
+  const os = document.getElementById('os_number');
+  if (os) os.value = '';
+
+  // Tipo volta para "lente"
+  const tipo = document.getElementById('tipo');
+  if (tipo) tipo.value = 'lente';
+
+  // Produto / Código
+  const productSelect = document.getElementById('product_id');
+  const productCode   = document.getElementById('product_code');
+  if (productSelect) productSelect.value = '';
+  if (productCode)   productCode.value   = '';
+
+  // Fornecedores e dicas de preço
+  const suppMain   = document.getElementById('supplier_main');
+  const suppSecond = document.getElementById('supplier_second');
+  const priceMain  = document.getElementById('price_main');
+  const priceSecond= document.getElementById('price_second');
+  const hintMain   = document.getElementById('price_main_max');
+  const hintSecond = document.getElementById('price_second_max');
+
+  if (suppMain)   suppMain.innerHTML   = '';
+  if (suppSecond) suppSecond.innerHTML = '';
+  if (priceMain)  priceMain.value  = '';
+  if (priceSecond)priceSecond.value= '';
+  if (hintMain)   hintMain.textContent   = '';
+  if (hintSecond) hintSecond.textContent = '';
+
+  // Fornecedor distinto desmarca e esconde bloco B
+  const chkDist = document.getElementById('supplier_distinto');
+  if (chkDist) chkDist.checked = false;
+  const secondWrap = document.getElementById('second_supplier_wrap');
+  if (secondWrap) secondWrap.style.display = 'none';
+
+  // Par/Meio → volta para Meio (esconde campos B)
+  const meio = document.querySelector('input[name="pair_option"][value="meio"]');
+  if (meio) meio.checked = true;
+
+  // Dioptrias: usar os NAMES reais do template
+  const namesToClear = [
+    'd1_sphere','d1_cylinder','d2_sphere','d2_cylinder',
+    'd1_addition','d2_addition'
+  ];
+  namesToClear.forEach(n => {
+    const el = document.querySelector(`[name="${n}"]`);
+    if (el) el.value = '';
   });
-  const first = document.getElementById('os_number') || document.querySelector('input,select,textarea');
-  if (first) first.focus();
+
+  // Bases (selects)
+  ['d1_base','d2_base'].forEach(n => {
+    const el = document.querySelector(`select[name="${n}"]`);
+    if (el) el.selectedIndex = 0;
+  });
+
+  // Reaplica lógica visual (usa funções já definidas no script principal)
+  if (typeof refreshProductsByTipo === 'function') refreshProductsByTipo();
+  if (typeof normalizeAdditionInputs === 'function') normalizeAdditionInputs();
+  if (typeof syncTipo === 'function') syncTipo();
+  if (typeof syncPairFields === 'function') syncPairFields();
+  if (typeof updateMaxHints === 'function') updateMaxHints();
+
+  // Foco no primeiro campo
+  (os || document.querySelector('input,select,textarea'))?.focus();
 }
 </script>
