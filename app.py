@@ -1516,6 +1516,7 @@ def admin_import_orcamento():
     flash("Importação das regras do orçamento concluída.", "success")
     return redirect(url_for('admin_import'))
 
+
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
     ret = require_role("comprador", "admin")
@@ -1559,160 +1560,159 @@ def compras_novo():
         except ValueError:
             flash("Número de OS inválido.", "error")
             return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-        if os_int < int(cfg["os_min"]) or os_int > int(cfg["os_max"]):
-            flash(f"Número de OS fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
+        if not (int(cfg["os_min"]) <= os_int <= int(cfg["os_max"])):
+            flash(f"OS fora do intervalo permitido ({cfg['os_min']}–{cfg['os_max']}).", "error")
             return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-# === Persistência do POST de compras_novo ===
-import json
-try:
-    payload_raw = form.get("hidden_payload") or "[]"
-    items = json.loads(payload_raw)
-except Exception:
-    items = []
-
-if not items:
-    flash("Nenhum item na lista. Clique em 'Adicionar à lista' antes de enviar.", "error")
-    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-
-# Mapa produto+fornecedor -> preço máximo permitido
-rules_by_key = {}
-try:
-    for r in combos:
-        pid = int(r.get("product_id"))
-        sid = int(r.get("supplier_id"))
-        mx = float(r.get("max_price"))
-        rules_by_key[(pid, sid)] = mx
-except Exception:
-    pass
-
-errs = []
-norm_items = []
-for it in items:
+    # === Persistência do POST de compras_novo ===
+    import json
     try:
-        pid = int(it.get("product_id") or 0)
-        sid = int(it.get("supplier_id") or 0)
-        price = float(str(it.get("price") or "0").replace(',', '.'))
+        payload_raw = form.get("hidden_payload") or "[]"
+        items = json.loads(payload_raw)
     except Exception:
-        pid = sid = 0
-        price = 0.0
+        items = []
 
-    tipo = (it.get("tipo") or "").strip().lower()
+    if not items:
+        flash("Nenhum item na lista. Clique em 'Adicionar à lista' antes de enviar.", "error")
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-    if not pid or not sid or price <= 0:
-        errs.append("Item inválido (produto/fornecedor/valor).")
-        continue
-
-    mx = rules_by_key.get((pid, sid))
-    if mx is None:
-        errs.append("Produto/fornecedor sem regra ativa.")
-        continue
-    if price > mx + 1e-9:
-        errs.append(f"Valor acima do máximo permitido (R$ {mx:.2f}).")
-        continue
-
-    def _f(v):
-        try:
-            return float(str(v).replace(',', '.'))
-        except Exception:
-            return None
-
-    sphere = _f(it.get("sphere"))
-    cylinder = _f(it.get("cylinder"))
-    base = _f(it.get("base"))
-    addition = _f(it.get("addition"))
-
-    if cylinder is not None:
-        cylinder = -abs(cylinder)
-
-    # Troca automática por cilindro em lentes, se a função existir
+    # Mapa produto+fornecedor -> preço máximo permitido
+    rules_by_key = {}
     try:
-        _maybe = globals().get("maybe_swap_lente_by_cylinder")
-        if _maybe and tipo == "lente" and cylinder is not None:
-            new_pid, new_price, _swap_names = _maybe(pid, sid, price, cylinder)
-            mx2 = rules_by_key.get((new_pid, sid))
-            if mx2 is not None and new_price <= mx2 + 1e-9:
-                pid, price = new_pid, new_price
+        for r in combos:
+            pid = int(r.get("product_id"))
+            sid = int(r.get("supplier_id"))
+            mx = float(r.get("max_price"))
+            rules_by_key[(pid, sid)] = mx
     except Exception:
         pass
 
-    norm_items.append({
-        "supplier_id": sid,
-        "product_id": pid,
-        "unit_price": price,
-        "quantity": 1,
-        "sphere": sphere,
-        "cylinder": cylinder,
-        "base": base,
-        "addition": addition,
-        "os_number": os_number,
-    })
+    errs = []
+    norm_items = []
+    for it in items:
+        try:
+            pid = int(it.get("product_id") or 0)
+            sid = int(it.get("supplier_id") or 0)
+            price = float(str(it.get("price") or "0").replace(',', '.'))
+        except Exception:
+            pid = sid = 0
+            price = 0.0
 
-if errs or not norm_items:
-    if not norm_items and not errs:
-        errs.append("Nenhum item válido após validação.")
-    for e in errs:
-        flash(e, "error")
-    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+        tipo = (it.get("tipo") or "").strip().lower()
 
-from collections import defaultdict
-groups = defaultdict(list)
-for it in norm_items:
-    groups[it["supplier_id"]].append(it)
+        if not pid or not sid or price <= 0:
+            errs.append("Item inválido (produto/fornecedor/valor).")
+            continue
 
-# Regra: OS pode ser usada no máximo 2 vezes (contando pedidos distintos)
-if os_number:
-    with engine.connect() as _conn_chk:
-        existing_count = _conn_chk.execute(text("""
-            SELECT COUNT(DISTINCT order_id)
-            FROM purchase_items
-            WHERE os_number = :os
-        """), {"os": os_number}).scalar() or 0
-    proposed = len(groups)
-    if existing_count + proposed > 2:
-        flash(f"Número de OS {os_number} já utilizado {existing_count} vez(es). Limite máximo: 2.", "error")
+        mx = rules_by_key.get((pid, sid))
+        if mx is None:
+            errs.append("Produto/fornecedor sem regra ativa.")
+            continue
+        if price > mx + 1e-9:
+            errs.append(f"Valor acima do máximo permitido (R$ {mx:.2f}).")
+            continue
+
+        def _f(v):
+            try:
+                return float(str(v).replace(',', '.'))
+            except Exception:
+                return None
+
+        sphere = _f(it.get("sphere"))
+        cylinder = _f(it.get("cylinder"))
+        base = _f(it.get("base"))
+        addition = _f(it.get("addition"))
+
+        if cylinder is not None:
+            cylinder = -abs(cylinder)
+
+        # Troca automática por cilindro em lentes, se a função existir
+        try:
+            _maybe = globals().get("maybe_swap_lente_by_cylinder")
+            if _maybe and tipo == "lente" and cylinder is not None:
+                new_pid, new_price, _swap_names = _maybe(pid, sid, price, cylinder)
+                mx2 = rules_by_key.get((new_pid, sid))
+                if mx2 is not None and new_price <= mx2 + 1e-9:
+                    pid, price = new_pid, new_price
+        except Exception:
+            pass
+
+        norm_items.append({
+            "supplier_id": sid,
+            "product_id": pid,
+            "unit_price": price,
+            "quantity": 1,
+            "sphere": sphere,
+            "cylinder": cylinder,
+            "base": base,
+            "addition": addition,
+            "os_number": os_number,
+        })
+
+    if errs or not norm_items:
+        if not norm_items and not errs:
+            errs.append("Nenhum item válido após validação.")
+        for e in errs:
+            flash(e, "error")
         return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-now = datetime.utcnow()
-created_orders = []
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for it in norm_items:
+        groups[it["supplier_id"]].append(it)
 
-with engine.begin() as conn:
-    for sid, group in groups.items():
-        total = sum((g["unit_price"] * g["quantity"]) for g in group)
-        oid = conn.execute(text("""
-            INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-            VALUES (:buyer, :supplier, 'PENDENTE_PAGAMENTO', :total, :note, :c, :u)
-            RETURNING id
-        """), {
-            "buyer": session["user_id"],
-            "supplier": sid,
-            "total": total,
-            "note": None,
-            "c": now,
-            "u": now
-        }).scalar_one()
+    # Regra: OS pode ser usada no máximo 2 vezes (contando pedidos distintos)
+    if os_number:
+        with engine.connect() as _conn_chk:
+            existing_count = _conn_chk.execute(text("""
+                SELECT COUNT(DISTINCT order_id)
+                FROM purchase_items
+                WHERE os_number = :os
+            """), {"os": os_number}).scalar() or 0
+        proposed = len(groups)
+        if existing_count + proposed > 2:
+            flash(f"Número de OS {os_number} já utilizado {existing_count} vez(es). Limite máximo: 2.", "error")
+            return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-        for g in group:
-            conn.execute(text("""
-                INSERT INTO purchase_items
-                (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                VALUES (:o, :p, :q, :up, :sph, :cil, :base, :add, :os)
+    now = datetime.utcnow()
+    created_orders = []
+
+    with engine.begin() as conn:
+        for sid, group in groups.items():
+            total = sum((g["unit_price"] * g["quantity"]) for g in group)
+            oid = conn.execute(text("""
+                INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
+                VALUES (:buyer, :supplier, 'PENDENTE_PAGAMENTO', :total, :note, :c, :u)
+                RETURNING id
             """), {
-                "o": oid, "p": g["product_id"], "q": g["quantity"], "up": g["unit_price"],
-                "sph": g["sphere"], "cil": g["cylinder"], "base": g["base"], "add": g["addition"],
-                "os": g["os_number"]
-            })
+                "buyer": session["user_id"],
+                "supplier": sid,
+                "total": total,
+                "note": None,
+                "c": now,
+                "u": now
+            }).scalar_one()
 
-        created_orders.append(oid)
+            for g in group:
+                conn.execute(text("""
+                    INSERT INTO purchase_items
+                    (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
+                    VALUES (:o, :p, :q, :up, :sph, :cil, :base, :add, :os)
+                """), {
+                    "o": oid, "p": g["product_id"], "q": g["quantity"], "up": g["unit_price"],
+                    "sph": g["sphere"], "cil": g["cylinder"], "base": g["base"], "add": g["addition"],
+                    "os": g["os_number"]
+                })
 
-try:
-    audit("orders_create", f"count={len(created_orders)} os={os_number}")
-except Exception:
-    pass
+            created_orders.append(oid)
 
-flash(f"Criado(s) {len(created_orders)} pedido(s) para a OS {os_number}.", "success")
-return redirect(url_for("compras_lista"))
-# === FIM Persistência ===
+    try:
+        audit("orders_create", f"count={len(created_orders)} os={os_number}")
+    except Exception:
+        pass
+
+    flash(f"Criado(s) {len(created_orders)} pedido(s) para a OS {os_number}.", "success")
+    return redirect(url_for("compras_lista"))
 @app.route("/compras")
 def compras_lista():
     ret = require_role("comprador","admin")
