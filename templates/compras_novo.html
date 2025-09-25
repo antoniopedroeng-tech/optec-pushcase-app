@@ -212,6 +212,21 @@
   // --- dados vindos do backend (regras e produtos) ---
   const combos = {{ combos|tojson }};
   const productsAll = {{ products|tojson }};
+  // Configuração de intervalo de OS (vindas do backend)
+  const cfgOS = {{ (cfg or {}) | tojson }};
+
+  function osDentroDoIntervalo(osStr) {
+    if (!osStr || !/^\d+$/.test(osStr)) return false;
+    const n = Number(osStr);
+    if (cfgOS && cfgOS.os_min != null && cfgOS.os_max != null) {
+      return n >= Number(cfgOS.os_min) && n <= Number(cfgOS.os_max);
+    }
+    return true;
+  }
+
+  function osJaNaListaCount(osStr) {
+    return pendingItems.filter(it => String(it.os_number) === String(osStr)).length;
+  }
 
   function suppliersForProduct(pid) {
     const items = combos.filter(c => c.product_id === Number(pid));
@@ -655,12 +670,3 @@ function clearInputs() {
 </script>
 
 
-<script>
-(function(){
-  const btn = document.getElementById('add_to_list');
-  if (!btn) return;
-  btn.addEventListener('click', function(){
-    setTimeout(function(){ try { clearInputs(); } catch(e){} }, 0);
-  });
-})();
-</script>
