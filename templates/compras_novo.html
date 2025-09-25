@@ -1,3 +1,21 @@
+<script>
+  const cfgOS = {{ (cfg or {}) | tojson }};
+
+  function osDentroDoIntervalo(osStr) {
+    if (!osStr || !/^\d+$/.test(osStr)) return false;
+    const n = Number(osStr);
+    if (cfgOS && cfgOS.os_min != null && cfgOS.os_max != null) {
+      return n >= Number(cfgOS.os_min) && n <= Number(cfgOS.os_max);
+    }
+    return true;
+  }
+
+  function osJaNaListaCount(osStr) {
+    return (typeof pendingItems !== 'undefined')
+      ? pendingItems.filter(it => String(it.os_number) === String(osStr)).length
+      : 0;
+  }
+</script>
 {% extends "base.html" %}
 {% block title %}Novo Pedido{% endblock %}
 {% block content %}
@@ -212,21 +230,6 @@
   // --- dados vindos do backend (regras e produtos) ---
   const combos = {{ combos|tojson }};
   const productsAll = {{ products|tojson }};
-  // Configuração de intervalo de OS (vindas do backend)
-  const cfgOS = {{ (cfg or {}) | tojson }};
-
-  function osDentroDoIntervalo(osStr) {
-    if (!osStr || !/^\d+$/.test(osStr)) return false;
-    const n = Number(osStr);
-    if (cfgOS && cfgOS.os_min != null && cfgOS.os_max != null) {
-      return n >= Number(cfgOS.os_min) && n <= Number(cfgOS.os_max);
-    }
-    return true;
-  }
-
-  function osJaNaListaCount(osStr) {
-    return pendingItems.filter(it => String(it.os_number) === String(osStr)).length;
-  }
 
   function suppliersForProduct(pid) {
     const items = combos.filter(c => c.product_id === Number(pid));
@@ -487,10 +490,52 @@
     };
   }
 
-  document.getElementById('add_to_list').addEventListener('click', () => {
+  
+<script>
+function clearInputs() {
+  const byId = (id) => document.getElementById(id);
+  const byName = (name) => document.querySelector(`[name="${name}"]`) || document.getElementById(name);
+
+  // Campos principais
+  if (byId('os_number')) byId('os_number').value = '';
+  if (byId('tipo')) byId('tipo').value = 'lente';
+  if (byId('product_code')) byId('product_code').value = '';
+  if (byId('price_main')) byId('price_main').value = '';
+
+  // Par/meio par
+  const meio = document.querySelector('input[name="pair_option"][value="meio"]');
+  if (meio) meio.checked = true;
+
+  // Fornecedor distinto
+  const cb = byId('supplier_distinct');
+  if (cb) cb.checked = false;
+
+  // Campos dioptrias/base A/B
+  const names = [
+    'd1_sphere','d1_cylinder','d1_addition','d1_base',
+    'd2_sphere','d2_cylinder','d2_addition','d2_base'
+  ];
+  names.forEach(n => { const el = byName(n); if (el) el.value = ''; });
+
+  // Esconde bloco B, se existir
+  const blockB = byId('block_B');
+  if (blockB) blockB.classList.add('d-none');
+
+  // Recarrega combos/dicas, se funções existirem
+  try { if (typeof refreshProducts === 'function') refreshProducts(); } catch(e){}
+  try { if (typeof refreshHints === 'function') refreshHints(); } catch(e){}
+}
+</script>
+document.getElementById('add_to_list').addEventListener('click', () => {
     const os = document.getElementById('os_number').value.trim();
-    if (!os) { alert('Informe a OS.'); return; }
-    const pid = productSelect.value;
+    \1
+    if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
+    if (!osDentroDoIntervalo(os)) { alert(`OS fora do intervalo permitido (${cfgOS.os_min}–${cfgOS.os_max}).`); return; }
+    const isParCheck = document.querySelector('input[name="pair_option"]:checked')?.value === 'par';
+    const linhasNovas = isParCheck ? 2 : 1;
+    const jaTem = osJaNaListaCount(os);
+    if (jaTem + linhasNovas > 2) { alert('Esta OS já atingiu o limite máximo (2 linhas no total).'); return; }
+const pid = productSelect.value;
     if (!pid) { alert('Selecione um produto.'); return; }
     if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
 
@@ -510,7 +555,8 @@
       fornecedor: currentSupplierName(suppMain),
       d: dA,
       preco: preco1
-    });
+    try { clearInputs(); } catch(e) {}
+});
     pendingItems.push(makeItemPayload(os, tipoSel.value, pid, suppMain.value, preco1, dA));
 
     // Se for par, checar (B)
