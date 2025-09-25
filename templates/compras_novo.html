@@ -1,23 +1,128 @@
-<script>
-  const cfgOS = {{ (cfg or {}) | tojson }};
-
-  function osDentroDoIntervalo(osStr) {
-    if (!osStr || !/^\d+$/.test(osStr)) return false;
-    const n = Number(osStr);
-    if (cfgOS && cfgOS.os_min != null && cfgOS.os_max != null) {
-      return n >= Number(cfgOS.os_min) && n <= Number(cfgOS.os_max);
-    }
-    return true;
-  }
-
-  function osJaNaListaCount(osStr) {
-    return (typeof pendingItems !== 'undefined')
-      ? pendingItems.filter(it => String(it.os_number) === String(osStr)).length
-      : 0;
-  }
-</script>
 {% extends "base.html" %}
-{% block title %}Novo Pedido{% endblock %}
+{% block title %}Novo Pedido<script>
+// ==== Helpers de OS ====
+const cfgOS = {{ (cfg or {}) | tojson }};
+function osDentroDoIntervalo(osStr) {
+  if (!osStr || !/^\d+$/.test(osStr)) return false;
+  const n = Number(osStr);
+  if (cfgOS && cfgOS.os_min != null && cfgOS.os_max != null) {
+    return n >= Number(cfgOS.os_min) && n <= Number(cfgOS.os_max);
+  }
+  return true;
+}
+function osJaNaListaCount(osStr) {
+  return (typeof pendingItems !== 'undefined')
+    ? pendingItems.filter(it => String(it.os_number) === String(osStr)).length
+    : 0;
+}
+
+// ==== Limpeza ====
+function clearInputs() {
+  const byId = (id) => document.getElementById(id);
+  const byName = (name) => document.querySelector(`[name="${name}"]`) || document.getElementById(name);
+
+  if (byId('os_number')) byId('os_number').value = '';
+  if (byId('tipo')) byId('tipo').value = 'lente';
+  if (byId('product_code')) byId('product_code').value = '';
+  if (byId('price_main')) byId('price_main').value = '';
+
+  const meio = document.querySelector('input[name="pair_option"][value="meio"]');
+  if (meio) meio.checked = true;
+
+  const cb = byId('supplier_distinct');
+  if (cb) cb.checked = false;
+
+  const names = [
+    'd1_sphere','d1_cylinder','d1_addition','d1_base',
+    'd2_sphere','d2_cylinder','d2_addition','d2_base'
+  ];
+  names.forEach(n => { const el = byName(n); if (el) el.value = ''; });
+
+  const blockB = byId('block_B');
+  if (blockB) blockB.classList.add('d-none');
+
+  try { if (typeof refreshProductsByTipo === 'function') refreshProductsByTipo(); } catch(e){}
+  try { if (typeof refreshHints === 'function') refreshHints(); } catch(e){}
+}
+
+// ==== Handler principal do botão ====
+document.getElementById('add_to_list').addEventListener('click', () => {
+  const os = document.getElementById('os_number').value.trim();
+
+  if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
+  if (!osDentroDoIntervalo(os)) {
+    alert(`OS fora do intervalo permitido (${cfgOS.os_min}–${cfgOS.os_max}).`);
+    return;
+  }
+
+  const isParCheck = document.querySelector('input[name="pair_option"]:checked')?.value === 'par';
+  const linhasNovas = isParCheck ? 2 : 1;
+  const jaTem = osJaNaListaCount(os);
+  if (jaTem + linhasNovas > 2) {
+    alert('Esta OS já atingiu o limite máximo (2 linhas no total).');
+    return;
+  }
+
+  const pid = productSelect.value;
+  if (!pid) { alert('Selecione um produto.'); return; }
+  if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
+
+  const preco1 = parseFloat(priceMain.value || '0');
+  if (!preco1 || preco1 <= 0) { alert('Informe o valor (A).'); return; }
+  if (priceExceedsMax(pid, suppMain.value, preco1)) {
+    alert('Valor (A) acima do máximo permitido para este produto/fornecedor.');
+    return;
+  }
+
+  const dA = buildA();
+
+  // Adiciona A (UI + payload)
+  addRow({
+    os,
+    tipo: tipoSel.value,
+    produto: currentProductName(),
+    fornecedor: currentSupplierName(suppMain),
+    d: dA,
+    preco: preco1
+  });
+  pendingItems.push(makeItemPayload(os, tipoSel.value, pid, suppMain.value, preco1, dA));
+
+  // Se for par, checar (B)
+  if (isParCheck) {
+    let fornecedor2 = currentSupplierName(suppMain);
+    let preco2 = preco1;
+    let sid2 = suppMain.value;
+
+    if (supplierDistinto.checked) {
+      if (!suppSecond.value) { alert('Selecione o fornecedor (B).'); return; }
+      fornecedor2 = currentSupplierName(suppSecond);
+      sid2 = suppSecond.value;
+      const p2 = parseFloat(priceSecond.value || '0');
+      if (!p2 || p2 <= 0) { alert('Informe o valor (B).'); return; }
+      if (priceExceedsMax(pid, sid2, p2)) {
+        alert('Valor (B) acima do máximo permitido para este produto/fornecedor.');
+        return;
+      }
+      preco2 = p2;
+    }
+
+    const dB = buildB();
+    addRow({
+      os,
+      tipo: tipoSel.value,
+      produto: currentProductName(),
+      fornecedor: fornecedor2,
+      d: dB,
+      preco: preco2
+    });
+    pendingItems.push(makeItemPayload(os, tipoSel.value, pid, sid2, preco2, dB));
+  }
+
+  recomputeTotal();
+  try { clearInputs(); } catch(e) {}
+});
+</script>
+{% endblock %}
 {% block content %}
 <style>
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
@@ -490,52 +595,10 @@
     };
   }
 
-  
-<script>
-function clearInputs() {
-  const byId = (id) => document.getElementById(id);
-  const byName = (name) => document.querySelector(`[name="${name}"]`) || document.getElementById(name);
-
-  // Campos principais
-  if (byId('os_number')) byId('os_number').value = '';
-  if (byId('tipo')) byId('tipo').value = 'lente';
-  if (byId('product_code')) byId('product_code').value = '';
-  if (byId('price_main')) byId('price_main').value = '';
-
-  // Par/meio par
-  const meio = document.querySelector('input[name="pair_option"][value="meio"]');
-  if (meio) meio.checked = true;
-
-  // Fornecedor distinto
-  const cb = byId('supplier_distinct');
-  if (cb) cb.checked = false;
-
-  // Campos dioptrias/base A/B
-  const names = [
-    'd1_sphere','d1_cylinder','d1_addition','d1_base',
-    'd2_sphere','d2_cylinder','d2_addition','d2_base'
-  ];
-  names.forEach(n => { const el = byName(n); if (el) el.value = ''; });
-
-  // Esconde bloco B, se existir
-  const blockB = byId('block_B');
-  if (blockB) blockB.classList.add('d-none');
-
-  // Recarrega combos/dicas, se funções existirem
-  try { if (typeof refreshProducts === 'function') refreshProducts(); } catch(e){}
-  try { if (typeof refreshHints === 'function') refreshHints(); } catch(e){}
-}
-</script>
-document.getElementById('add_to_list').addEventListener('click', () => {
+  document.getElementById('add_to_list').addEventListener('click', () => {
     const os = document.getElementById('os_number').value.trim();
-    \1
-    if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
-    if (!osDentroDoIntervalo(os)) { alert(`OS fora do intervalo permitido (${cfgOS.os_min}–${cfgOS.os_max}).`); return; }
-    const isParCheck = document.querySelector('input[name="pair_option"]:checked')?.value === 'par';
-    const linhasNovas = isParCheck ? 2 : 1;
-    const jaTem = osJaNaListaCount(os);
-    if (jaTem + linhasNovas > 2) { alert('Esta OS já atingiu o limite máximo (2 linhas no total).'); return; }
-const pid = productSelect.value;
+    if (!os) { alert('Informe a OS.'); return; }
+    const pid = productSelect.value;
     if (!pid) { alert('Selecione um produto.'); return; }
     if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
 
@@ -555,8 +618,7 @@ const pid = productSelect.value;
       fornecedor: currentSupplierName(suppMain),
       d: dA,
       preco: preco1
-    try { clearInputs(); } catch(e) {}
-});
+    });
     pendingItems.push(makeItemPayload(os, tipoSel.value, pid, suppMain.value, preco1, dA));
 
     // Se for par, checar (B)
@@ -716,3 +778,12 @@ function clearInputs() {
 </script>
 
 
+<script>
+(function(){
+  const btn = document.getElementById('add_to_list');
+  if (!btn) return;
+  btn.addEventListener('click', function(){
+    setTimeout(function(){ try { clearInputs(); } catch(e){} }, 0);
+  });
+})();
+</script>
