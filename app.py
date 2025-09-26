@@ -1558,7 +1558,7 @@ def compras_novo():
             for r in combos:
                 pid = int(r.get("product_id"))
                 sid = int(r.get("supplier_id"))
-                mx  = float(r.get("max_price"))
+                mx = float(r.get("max_price"))
                 rules_by_key[(pid, sid)] = mx
         except Exception:
             pass
@@ -1597,14 +1597,16 @@ def compras_novo():
         # counts existentes no banco para essas OS
         existing_counts = {}
         if distinct_os:
-            placeholders = ",".join([f":os{{i}}" for i, _ in enumerate(set(distinct_os))])
-            params = {{f"os{{i}}": v for i, v in enumerate(set(distinct_os))}}
+            # placeholders nomeados :os0, :os1, ...
+            uniq = list(sorted(set(distinct_os)))
+            placeholders = ",".join([f":os{i}" for i in range(len(uniq))])
+            params = {f"os{i}": v for i, v in enumerate(uniq)}
             rows = db_all(f"""
                 SELECT os_number, COUNT(*) AS n
                 FROM purchase_items
-                WHERE os_number IN ({{placeholders}})
+                WHERE os_number IN ({placeholders})
                 GROUP BY os_number
-            f""", **params)
+            """, **params)
             for r in rows:
                 existing_counts[str(r["os_number"])] = int(r["n"] or 0)
 
@@ -1639,7 +1641,7 @@ def compras_novo():
 
     flash("Nenhum item na lista. Clique em 'Adicionar à lista' antes de enviar.", "error")
     return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-    
+
 @app.route("/compras")
 def compras_lista():
     ret = require_role("comprador","admin")
