@@ -1,12 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Novo Pedido<script>
 // ==== Helpers de OS (globais) ====
-// Normaliza OS para conter apenas dígitos (remove espaços, NBSP, hífens, pontos, etc.)
-window.sanitizeOS = function(osStr) {
-  if (osStr == null) return "";
-  return String(osStr).replace(/\u00A0/g, ' ').trim().replace(/[^\d]/g, '');
-};
-
 window.cfgOS = {{ (cfg or {}) | tojson }};
 window.osDentroDoIntervalo = function(osStr) {
   if (!osStr || !/^\d+$/.test(osStr)) return false;
@@ -83,13 +77,11 @@ window.clearInputs = function() {
 
 // ==== Handler principal do botão (chama clearInputs no sucesso) ====
 document.getElementById('add_to_list').addEventListener('click', () => {
-  const osRaw = document.getElementById('os_number').value;
-  const os = window.sanitizeOS(osRaw);
+  const osInput = document.getElementById('os_number');
+  const os = window.sanitizeOS(osInput ? osInput.value : '');
+  if (osInput && osInput.value !== os) osInput.value = os;
 
   if (!os) { alert('Informe a OS (apenas dígitos).'); return; }
-  if (os !== window.sanitizeOS(osRaw)) {
-    document.getElementById('os_number').value = os;
-  }
   if (!window.osDentroDoIntervalo(os)) {
     alert(`OS fora do intervalo permitido (${window.cfgOS.os_min}–${window.cfgOS.os_max}).`);
     return;
@@ -159,6 +151,33 @@ document.getElementById('add_to_list').addEventListener('click', () => {
   try { window.clearInputs(); } catch(e) {}
 });
 </script>
+
+<script>
+window.sanitizeOS = function(osStr) {
+  if (osStr == null) return "";
+  return String(osStr).replace(/\u00A0/g, ' ').trim().replace(/[^\d]/g, '');
+};
+</script>
+
+<script>
+(function() {
+  const form = document.getElementById('pedidoForm');
+  if (!form) return;
+  form.addEventListener('submit', function(ev) {
+    const hidden = document.getElementById('hidden_payload');
+    const pending = Array.isArray(window.pendingItems) ? window.pendingItems : [];
+    if (pending.length > 0) {
+      if (hidden) hidden.value = JSON.stringify(pending);
+      const relax = ['os_number','product_code','price_main','tipo'];
+      relax.forEach(id => { const el = document.getElementById(id); if (el && el.hasAttribute('required')) el.removeAttribute('required'); });
+      const osField = document.getElementById('os_number');
+      if (osField) osField.value = '';
+    } else {
+      if (hidden) hidden.value = '[]';
+    }
+  });
+})();
+</script>
 {% endblock %}
 {% block content %}
 <style>
@@ -184,7 +203,7 @@ document.getElementById('add_to_list').addEventListener('click', () => {
     <div class="form-row">
       <div>
         <label>OS</label>
-        <input type="text" name="os_number" id="os_number" class="form-control" required inputmode="numeric" pattern="[0-9]*" placeholder="{{ (cfg.os_min ~ '–' ~ cfg.os_max) if (cfg is defined and cfg.os_min is not none and cfg.os_max is not none) else '' }}">
+        <input type="text" name="os_number" id="os_number" class="form-control" inputmode="numeric" placeholder="{{ (cfg.os_min ~ '–' ~ cfg.os_max) if (cfg is defined and cfg.os_min is not none and cfg.os_max is not none) else '' }}">
       </div>
       <div>
         <label>Par</label><br/>
@@ -762,12 +781,6 @@ document.getElementById('add_to_list').addEventListener('click', () => {
 </script>
 <script>
 // ==== Helpers de OS (globais) ====
-// Normaliza OS para conter apenas dígitos (remove espaços, NBSP, hífens, pontos, etc.)
-window.sanitizeOS = function(osStr) {
-  if (osStr == null) return "";
-  return String(osStr).replace(/\u00A0/g, ' ').trim().replace(/[^\d]/g, '');
-};
-
 window.cfgOS = {{ (cfg or {}) | tojson }};
 window.osDentroDoIntervalo = function(osStr) {
   if (!osStr || !/^\d+$/.test(osStr)) return false;
@@ -844,13 +857,9 @@ window.clearInputs = function() {
 
 // ==== Handler principal do botão (chama clearInputs no sucesso) ====
 document.getElementById('add_to_list').addEventListener('click', () => {
-  const osRaw = document.getElementById('os_number').value;
-  const os = window.sanitizeOS(osRaw);
+  const os = document.getElementById('os_number').value.trim();
 
-  if (!os) { alert('Informe a OS (apenas dígitos).'); return; }
-  if (os !== window.sanitizeOS(osRaw)) {
-    document.getElementById('os_number').value = os;
-  }
+  if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
   if (!window.osDentroDoIntervalo(os)) {
     alert(`OS fora do intervalo permitido (${window.cfgOS.os_min}–${window.cfgOS.os_max}).`);
     return;
@@ -919,6 +928,33 @@ document.getElementById('add_to_list').addEventListener('click', () => {
   recomputeTotal();
   try { window.clearInputs(); } catch(e) {}
 });
+</script>
+
+<script>
+window.sanitizeOS = function(osStr) {
+  if (osStr == null) return "";
+  return String(osStr).replace(/\u00A0/g, ' ').trim().replace(/[^\d]/g, '');
+};
+</script>
+
+<script>
+(function() {
+  const form = document.getElementById('pedidoForm');
+  if (!form) return;
+  form.addEventListener('submit', function(ev) {
+    const hidden = document.getElementById('hidden_payload');
+    const pending = Array.isArray(window.pendingItems) ? window.pendingItems : [];
+    if (pending.length > 0) {
+      if (hidden) hidden.value = JSON.stringify(pending);
+      const relax = ['os_number','product_code','price_main','tipo'];
+      relax.forEach(id => { const el = document.getElementById(id); if (el && el.hasAttribute('required')) el.removeAttribute('required'); });
+      const osField = document.getElementById('os_number');
+      if (osField) osField.value = '';
+    } else {
+      if (hidden) hidden.value = '[]';
+    }
+  });
+})();
 </script>
 {% endblock %}
 
