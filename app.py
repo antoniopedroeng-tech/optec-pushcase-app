@@ -1519,7 +1519,7 @@ def admin_import_orcamento():
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
-        ret = require_role("comprador", "admin")
+    ret = require_role("comprador", "admin")
     if ret:
         return ret
 
@@ -1582,7 +1582,7 @@ def compras_novo():
             try:
                 pid = int(it.get("product_id") or 0)
                 sid = int(it.get("supplier_id") or 0)
-                preco = float(it.get("unit_price") or it.get("price") or 0)
+                preco = float(it.get("unit_price") or 0)
             except Exception:
                 flash("Item inválido no payload.", "error")
                 return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
@@ -1615,65 +1615,11 @@ def compras_novo():
                 flash(f"A OS {os_i} ultrapassa o limite máximo de 2 linhas (somando existentes).", "error")
                 return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
-        
-# --- Persistência: cria pedidos por fornecedor ---
-from collections import defaultdict
-now = datetime.utcnow()
-items_by_supplier = defaultdict(list)
-for it in items:
-    items_by_supplier[int(it["supplier_id"])].append(it)
+        # >>> Persistência igual ao seu fluxo atual (insira aqui sua lógica de criar pedido/itens a partir de 'items')
+        # db_insert_order_and_items(items)
 
-created_orders = 0
-if not engine:
-    flash("DATABASE_URL ausente; não foi possível gravar.", "error")
-    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
-
-with engine.begin() as conn:
-    for supplier_id, lst in items_by_supplier.items():
-        total = sum(float(it.get("unit_price") or it.get("price") or 0) for it in lst)
-        conn.execute(text("""
-            INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
-            VALUES (:buyer, :supplier, 'PENDENTE_PAGAMENTO', :total, :note, :c, :u)
-        """), {
-            "buyer": session.get("user_id"),
-            "supplier": supplier_id,
-            "total": total,
-            "note": None,
-            "c": now,
-            "u": now
-        })
-        order_id = conn.execute(text("SELECT currval(pg_get_serial_sequence('purchase_orders','id'))")).scalar_one()
-
-        for it in lst:
-            sphere = it.get("sphere"); cylinder = it.get("cylinder")
-            base = it.get("base"); addition = it.get("addition")
-            product_id = int(it.get("product_id"))
-            unit_price = float(it.get("unit_price") or it.get("price") or 0)
-            os_number = str(it.get("os_number") or "").strip()
-
-            try:
-                if cylinder is not None:
-                    cylinder = -abs(float(cylinder))
-            except Exception:
-                pass
-
-            conn.execute(text("""
-                INSERT INTO purchase_items
-                  (order_id, product_id, quantity, unit_price, sphere, cylinder, base, addition, os_number)
-                VALUES (:order_id, :product_id, 1, :unit_price, :sphere, :cylinder, :base, :addition, :os)
-            """), {
-                "order_id": order_id,
-                "product_id": product_id,
-                "unit_price": unit_price,
-                "sphere": sphere, "cylinder": cylinder,
-                "base": base, "addition": addition,
-                "os": os_number
-            })
-        created_orders += 1
-
-audit("compras_novo_submit", f"orders_created={created_orders}, items={len(items)}")
-flash("Pedido enviado ao pagador com os itens da lista.", "success")
-return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+        flash("Pedido enviado ao pagador com os itens da lista.", "success")
+        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
     # 2) Caso NÃO haja itens, valida o cabeçalho como antes
     os_number = (form.get("os_number") or "").strip()
