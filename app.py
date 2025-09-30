@@ -1519,7 +1519,7 @@ def admin_import_orcamento():
 
 @app.route("/compras/novo", methods=["GET","POST"])
 def compras_novo():
-    ret = require_role("comprador", "admin")
+        ret = require_role("comprador", "admin")
     if ret:
         return ret
 
@@ -1624,11 +1624,13 @@ for it in items:
     items_by_supplier[int(it["supplier_id"])].append(it)
 
 created_orders = 0
+if not engine:
+    flash("DATABASE_URL ausente; não foi possível gravar.", "error")
+    return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+
 with engine.begin() as conn:
     for supplier_id, lst in items_by_supplier.items():
-        # total do pedido
         total = sum(float(it.get("unit_price") or it.get("price") or 0) for it in lst)
-        # cria purchase_orders
         conn.execute(text("""
             INSERT INTO purchase_orders (buyer_id, supplier_id, status, total, note, created_at, updated_at)
             VALUES (:buyer, :supplier, 'PENDENTE_PAGAMENTO', :total, :note, :c, :u)
@@ -1642,7 +1644,6 @@ with engine.begin() as conn:
         })
         order_id = conn.execute(text("SELECT currval(pg_get_serial_sequence('purchase_orders','id'))")).scalar_one()
 
-        # cria itens
         for it in lst:
             sphere = it.get("sphere"); cylinder = it.get("cylinder")
             base = it.get("base"); addition = it.get("addition")
@@ -1650,7 +1651,6 @@ with engine.begin() as conn:
             unit_price = float(it.get("unit_price") or it.get("price") or 0)
             os_number = str(it.get("os_number") or "").strip()
 
-            # Normaliza cilindro negativo quando vier número
             try:
                 if cylinder is not None:
                     cylinder = -abs(float(cylinder))
@@ -1672,9 +1672,8 @@ with engine.begin() as conn:
         created_orders += 1
 
 audit("compras_novo_submit", f"orders_created={created_orders}, items={len(items)}")
-
-        flash("Pedido enviado ao pagador com os itens da lista."), "success")
-        return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
+flash("Pedido enviado ao pagador com os itens da lista.", "success")
+return render_template("compras_novo.html", combos=combos, products=products, cfg=cfg)
 
     # 2) Caso NÃO haja itens, valida o cabeçalho como antes
     os_number = (form.get("os_number") or "").strip()
