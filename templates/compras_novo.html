@@ -149,8 +149,7 @@ document.getElementById('add_to_list').addEventListener('click', () => {
 
   recomputeTotal();
   try { window.clearInputs(); } catch(e) {}
-});
-</script>
+});</script>
 
 <script>
 window.sanitizeOS = function(osStr) {
@@ -639,227 +638,25 @@ window.sanitizeOS = function(osStr) {
   // >>> NOVO: função que prepara o objeto "item" para o backend (hidden_payload)
   function makeItemPayload(os, tipo, pid, sid, preco, d) {
     return {
-      os_number: os,
+      os_number: String(os),
       product_id: Number(pid),
       supplier_id: Number(sid),
-      price: Number(preco),
+      unit_price: Number(preco),
       tipo: String(tipo),
       sphere: (d.sphere ?? null),
       cylinder: (d.cylinder ?? null),
       base: (d.base ?? null),
       addition: (d.addition ?? null)
     };
+  };
   }
 
   document.getElementById('add_to_list').addEventListener('click', () => {
-    const os = document.getElementById('os_number').value.trim();
-    if (!os) { alert('Informe a OS.'); return; }
-    const pid = productSelect.value;
-    if (!pid) { alert('Selecione um produto.'); return; }
-    if (!suppMain.value) { alert('Selecione o fornecedor (A).'); return; }
+  const osInput = document.getElementById('os_number');
+  const os = window.sanitizeOS(osInput ? osInput.value : '');
+  if (osInput && osInput.value !== os) osInput.value = os;
 
-    const preco1 = parseFloat(priceMain.value || '0');
-    if (!preco1 || preco1 <= 0) { alert('Informe o valor (A).'); return; }
-    if (priceExceedsMax(pid, suppMain.value, preco1)) {
-      alert('Valor (A) acima do máximo permitido para este produto/fornecedor.');
-      return;
-    }
-
-    const dA = buildA();
-
-    // Adiciona A (UI + payload)
-    addRow({
-      os, tipo: tipoSel.value,
-      produto: currentProductName(),
-      fornecedor: currentSupplierName(suppMain),
-      d: dA,
-      preco: preco1
-    });
-    pendingItems.push(makeItemPayload(os, tipoSel.value, pid, suppMain.value, preco1, dA));
-
-    // Se for par, checar (B)
-    const isPar = document.querySelector('input[name="pair_option"]:checked').value === 'par';
-    if (isPar) {
-      let fornecedor2 = currentSupplierName(suppMain);
-      let preco2 = preco1;
-      let sid2 = suppMain.value;
-
-      if (supplierDistinto.checked) {
-        if (!suppSecond.value) { alert('Selecione o fornecedor (B).'); return; }
-        fornecedor2 = currentSupplierName(suppSecond);
-        sid2 = suppSecond.value;
-        const p2 = parseFloat(priceSecond.value || '0');
-        if (!p2 || p2 <= 0) { alert('Informe o valor (B).'); return; }
-        if (priceExceedsMax(pid, sid2, p2)) {
-          alert('Valor (B) acima do máximo permitido para este produto/fornecedor.');
-          return;
-        }
-        preco2 = p2;
-      }
-
-      const dB = buildB();
-
-      addRow({
-        os, tipo: tipoSel.value,
-        produto: currentProductName(),
-        fornecedor: fornecedor2,
-        d: dB,
-        preco: preco2
-      });
-      pendingItems.push(makeItemPayload(os, tipoSel.value, pid, sid2, preco2, dB));
-    }
-    recomputeTotal();
-    clearInputs();
-  });
-
-  document.getElementById('clear_list').addEventListener('click', () => {
-    tbody.innerHTML = '';
-    pendingItems.length = 0; // <<< NOVO: limpa também o buffer que é enviado ao backend
-    recomputeTotal();
-  });
-
-  // >>> NOVO: no submit, mandamos TODA a lista no hidden_payload (JSON)
-  document.getElementById('pedidoForm').addEventListener('submit', (ev) => {
-    const hidden = document.getElementById('hidden_payload');
-    if (!pendingItems.length) {
-      // Sem lista, deixa o backend usar os campos individuais como fallback
-      hidden.value = '[]';
-      return;
-    }
-    hidden.value = JSON.stringify(pendingItems);
-  });
-
-  
-  // === Adição 0 (BVS) para BLOCO ===
-  function isBloco() {
-    return (tipoSel && tipoSel.value === 'bloco');
-  }
-  function normalizeAdditionInputSingle(el) {
-    if (!el) return;
-    el.setAttribute('step', '0.25');
-    if (isBloco()) {
-      el.setAttribute('min', '0');
-      el.setAttribute('placeholder', '0 = BVS (bloco)');
-      // Se usuário colocou um valor intermediário (0 < x < 1), normaliza para 1.00
-      const v = parseFloat((el.value || '').replace(',', '.'));
-      if (!isNaN(v) && v > 0 && v < 1) el.value = '1';
-      // Se estiver vazio, sugerimos 0 visualmente (sem forçar)
-      // (Não auto-preenche para não surpreender.)
-    } else {
-      el.setAttribute('min', '1');
-      el.setAttribute('placeholder', '+1,00 a +4,00');
-      if (el.value === '0') el.value = '1';
-      const v = parseFloat((el.value || '').replace(',', '.'));
-      if (!isNaN(v) && v > 0 && v < 1) el.value = '1';
-    }
-  }
-  function normalizeAdditionInputs() {
-    normalizeAdditionInputSingle(document.querySelector('[name="d1_addition"]'));
-    normalizeAdditionInputSingle(document.querySelector('[name="d2_addition"]'));
-  }
-  function bindAdditionGuards() {
-    ['input','change','blur'].forEach(evt => {
-      const a1 = document.querySelector('[name="d1_addition"]');
-      const a2 = document.querySelector('[name="d2_addition"]');
-      if (a1) a1.addEventListener(evt, () => normalizeAdditionInputSingle(a1));
-      if (a2) a2.addEventListener(evt, () => normalizeAdditionInputSingle(a2));
-    });
-  }
-
-  // Inicializações
-  function init() {
-    bindAdditionGuards();
-    normalizeAdditionInputs();
-    refreshProductsByTipo();
-    syncTipo();
-    syncPairFields();
-    bindCylinder();
-    preventWheelOnNumber();
-    table.style.display = 'none';
-  }
-  init();
-</script>
-<script>
-// ==== Helpers de OS (globais) ====
-window.cfgOS = {{ (cfg or {}) | tojson }};
-window.osDentroDoIntervalo = function(osStr) {
-  if (!osStr || !/^\d+$/.test(osStr)) return false;
-  const n = Number(osStr);
-  if (window.cfgOS && window.cfgOS.os_min != null && window.cfgOS.os_max != null) {
-    return n >= Number(window.cfgOS.os_min) && n <= Number(window.cfgOS.os_max);
-  }
-  return true;
-};
-window.osJaNaListaCount = function(osStr) {
-  return (typeof window.pendingItems !== 'undefined')
-    ? window.pendingItems.filter(it => String(it.os_number) === String(osStr)).length
-    : 0;
-};
-
-// ==== Limpeza (global) ====
-window.clearInputs = function() {
-  const form = document.getElementById('pedidoForm') || document.querySelector('form');
-
-  if (form) {
-    form.querySelectorAll('input, select, textarea').forEach(el => {
-      if (el.disabled) return;
-      const type = (el.getAttribute('type') || el.type || '').toLowerCase();
-      const tag = el.tagName.toLowerCase();
-      if (type === 'hidden') return;
-      if (['hidden_payload','csrf_token'].includes(el.id)) return;
-
-      if (type === 'radio' || type === 'checkbox') { el.checked = false; return; }
-      if (tag === 'select') {
-        const empty = Array.from(el.options).find(o => o.value === '' || o.value == null);
-        el.value = empty ? '' : (el.options.length ? el.options[0].value : '');
-        el.dispatchEvent(new Event('change')); return;
-      }
-      el.value = '';
-      el.dispatchEvent(new Event('input'));
-      el.dispatchEvent(new Event('change'));
-    });
-  }
-
-  const tipo = document.getElementById('tipo');
-  if (tipo) { tipo.value = 'lente'; tipo.dispatchEvent(new Event('change')); }
-
-  const product = document.getElementById('product_code') || document.getElementById('productSelect');
-  if (product) { product.value = ''; product.dispatchEvent(new Event('change')); }
-
-  const supplierDistinct = document.getElementById('supplier_distinct');
-  if (supplierDistinct) supplierDistinct.checked = false;
-
-  const suppA = document.getElementById('supplier_main') || document.getElementById('suppMain');
-  if (suppA) { suppA.value = ''; suppA.dispatchEvent(new Event('change')); }
-  const suppB = document.getElementById('supplier_second') || document.getElementById('suppSecond');
-  if (suppB) { suppB.value = ''; suppB.dispatchEvent(new Event('change')); }
-
-  const priceA = document.getElementById('price_main');
-  if (priceA) { priceA.value = ''; priceA.dispatchEvent(new Event('input')); }
-  const priceB = document.getElementById('price_second');
-  if (priceB) { priceB.value = ''; priceB.dispatchEvent(new Event('input')); }
-
-  const radioMeio = document.querySelector('input[name="pair_option"][value="meio"]');
-  if (radioMeio) { radioMeio.checked = true; radioMeio.dispatchEvent(new Event('change')); }
-
-  const blocoB = document.getElementById('block_B');
-  if (blocoB) blocoB.classList.add('d-none');
-
-  ['d1_sphere','d1_cylinder','d1_addition','d1_base','d2_sphere','d2_cylinder','d2_addition','d2_base']
-    .forEach(n => {
-      const el = document.querySelector(`[name="${n}"]`) || document.getElementById(n);
-      if (el) { el.value = ''; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); }
-    });
-
-  try { if (typeof window.refreshProductsByTipo === 'function') window.refreshProductsByTipo(); } catch(e){}
-  try { if (typeof window.refreshHints === 'function') window.refreshHints(); } catch(e){}
-};
-
-// ==== Handler principal do botão (chama clearInputs no sucesso) ====
-document.getElementById('add_to_list').addEventListener('click', () => {
-  const os = document.getElementById('os_number').value.trim();
-
-  if (!/^\d+$/.test(os)) { alert('A OS deve conter apenas dígitos.'); return; }
+  if (!os) { alert('Informe a OS (apenas dígitos).'); return; }
   if (!window.osDentroDoIntervalo(os)) {
     alert(`OS fora do intervalo permitido (${window.cfgOS.os_min}–${window.cfgOS.os_max}).`);
     return;
@@ -927,8 +724,7 @@ document.getElementById('add_to_list').addEventListener('click', () => {
 
   recomputeTotal();
   try { window.clearInputs(); } catch(e) {}
-});
-</script>
+});</script>
 
 <script>
 window.sanitizeOS = function(osStr) {
