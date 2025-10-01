@@ -752,6 +752,197 @@ window.sanitizeOS = function(osStr) {
   });
 })();
 </script>
+
+<!-- ======== HOTFIX: Override duplicate handlers & ensure correct payload ======== -->
+<script>
+(function() {
+  if (!Array.isArray(window.pendingItems)) window.pendingItems = [];
+
+  if (!window.sanitizeOS) {
+    window.sanitizeOS = function(osStr){ if (osStr == null) return ""; return String(osStr).replace(/\u00A0/g,' ').trim().replace(/[^\d]/g,''); };
+  }
+  function currentProductName() {
+    const sel = document.getElementById('product_id');
+    const opt = sel ? sel.options[sel.selectedIndex] : null;
+    return opt ? opt.textContent : '';
+  }
+  function currentSupplierName(selectEl) {
+    const opt = selectEl ? selectEl.options[selectEl.selectedIndex] : null;
+    return opt ? opt.textContent : '';
+  }
+  function ruleFor(pid, sid) {
+    try { return (window.combos || []).find(c => Number(c.product_id) === Number(pid) && Number(c.supplier_id) === Number(sid)); }
+    catch(e){ return null; }
+  }
+  function priceExceedsMax(pid, sid, price) {
+    const r = ruleFor(pid, sid);
+    if (!r) return true;
+    return Number(price) > Number(r.max_price) + 1e-9;
+  }
+  window.makeItemPayload = function(os, tipo, pid, sid, preco, d) {
+    return {
+      os_number: String(os),
+      product_id: Number(pid),
+      supplier_id: Number(sid),
+      unit_price: Number(preco),
+      tipo: String(tipo),
+      sphere: (d && d.sphere != null ? d.sphere : null),
+      cylinder: (d && d.cylinder != null ? d.cylinder : null),
+      base: (d && d.base != null ? d.base : null),
+      addition: (d && d.addition != null ? d.addition : null)
+    };
+  };
+
+  function buildA() {
+    const tipoSel = document.getElementById('tipo');
+    if (tipoSel && tipoSel.value === 'lente') {
+      const sph = document.querySelector('input[name="d1_sphere"]')?.value || '';
+      const cyl = document.querySelector('input[name="d1_cylinder"]')?.value || '';
+      const v = parseFloat(String(cyl).replace(',', '.'));
+      const cylNeg = isNaN(v) ? '' : (-Math.abs(v)).toFixed(2);
+      return { sphere: parseFloat(sph), cylinder: parseFloat(cylNeg), base: null, addition: null };
+    } else {
+      return {
+        base: parseFloat(document.querySelector('select[name="d1_base"]')?.value || ''),
+        addition: parseFloat(document.querySelector('input[name="d1_addition"]')?.value || ''),
+        sphere: null, cylinder: null
+      };
+    }
+  }
+  function buildB() {
+    const tipoSel = document.getElementById('tipo');
+    if (tipoSel && tipoSel.value === 'lente') {
+      const sph = document.querySelector('input[name="d2_sphere"]')?.value || '';
+      const cyl = document.querySelector('input[name="d2_cylinder"]')?.value || '';
+      const v = parseFloat(String(cyl).replace(',', '.'));
+      const cylNeg = isNaN(v) ? '' : (-Math.abs(v)).toFixed(2);
+      return { sphere: parseFloat(sph), cylinder: parseFloat(cylNeg), base: null, addition: null };
+    } else {
+      return {
+        base: parseFloat(document.querySelector('select[name="d2_base"]')?.value || ''),
+        addition: parseFloat(document.querySelector('input[name="d2_addition"]')?.value || ''),
+        sphere: null, cylinder: null
+      };
+    }
+  }
+
+  function addRow(row) {
+    if (typeof window.addRow === 'function') return window.addRow(row);
+    const table = document.getElementById('items_table');
+    const tbody = table ? table.querySelector('tbody') : null;
+    if (!tbody) return;
+    table.style.display = '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = [
+      `<td>${row.os}</td>`,
+      `<td>${row.tipo||''}</td>`,
+      `<td>${row.produto||''}</td>`,
+      `<td>${row.fornecedor||''}</td>`,
+      `<td>${(row.d && row.d.sphere!=null)?row.d.sphere:''}${(row.d && row.d.cylinder!=null)?(' / ' + row.d.cylinder):''}</td>`,
+      `<td>${Number(row.preco||0).toFixed(2)}</td>`
+    ].join('');
+    tbody.appendChild(tr);
+  }
+  function recomputeTotal() { if (typeof window.recomputeTotal === 'function') window.recomputeTotal(); }
+
+  const btn = document.getElementById('add_to_list');
+  if (btn) {
+    const clone = btn.cloneNode(true);
+    btn.parentNode.replaceChild(clone, btn);
+    clone.addEventListener('click', function() {
+      const osInput = document.getElementById('os_number');
+      const os = window.sanitizeOS(osInput ? osInput.value : '');
+      if (osInput && osInput.value !== os) osInput.value = os;
+
+      if (!os) { alert('Informe a OS (apenas dígitos).'); return; }
+      if (typeof window.osDentroDoIntervalo === 'function' && !window.osDentroDoIntervalo(os)) {
+        alert(`OS fora do intervalo permitido (${(window.cfgOS||{}).os_min}–${(window.cfgOS||{}).os_max}).`);
+        return;
+      }
+
+      const tipoSel = document.getElementById('tipo');
+      const productSelect = document.getElementById('product_id');
+      const suppMain = document.getElementById('supplier_main');
+      const suppSecond = document.getElementById('supplier_second');
+      const supplierDistinto = document.getElementById('supplier_distinto');
+      const priceMain = document.getElementById('price_main');
+      const priceSecond = document.getElementById('price_second');
+
+      const isPar = document.querySelector('input[name="pair_option"]:checked')?.value === 'par';
+      const linhasNovas = isPar ? 2 : 1;
+      if (typeof window.osJaNaListaCount === 'function') {
+        const jaTem = window.osJaNaListaCount(os);
+        if (jaTem + linhasNovas > 2) { alert('Esta OS já atingiu o limite máximo (2 linhas no total).'); return; }
+      }
+
+      const pid = productSelect?.value;
+      if (!pid) { alert('Selecione um produto.'); return; }
+      if (!suppMain?.value) { alert('Selecione o fornecedor (A).'); return; }
+
+      const preco1 = parseFloat(priceMain?.value || '0');
+      if (!preco1 || preco1 <= 0) { alert('Informe o valor (A).'); return; }
+      if (priceExceedsMax(pid, suppMain.value, preco1)) {
+        alert('Valor (A) acima do máximo permitido para este produto/fornecedor.'); return;
+      }
+
+      const dA = buildA();
+      addRow({ os, tipo: tipoSel?.value, produto: currentProductName(), fornecedor: currentSupplierName(suppMain), d: dA, preco: preco1 });
+      window.pendingItems.push(window.makeItemPayload(os, tipoSel?.value, pid, suppMain.value, preco1, dA));
+
+      if (isPar) {
+        let fornecedor2 = currentSupplierName(suppMain);
+        let preco2 = preco1;
+        let sid2 = suppMain.value;
+        if (supplierDistinto && supplierDistinto.checked) {
+          if (!suppSecond?.value) { alert('Selecione o fornecedor (B).'); return; }
+          fornecedor2 = currentSupplierName(suppSecond);
+          sid2 = suppSecond.value;
+          const p2 = parseFloat(priceSecond?.value || '0');
+          if (!p2 || p2 <= 0) { alert('Informe o valor (B).'); return; }
+          if (priceExceedsMax(pid, sid2, p2)) { alert('Valor (B) acima do máximo permitido para este produto/fornecedor.'); return; }
+          preco2 = p2;
+        }
+        const dB = buildB();
+        addRow({ os, tipo: tipoSel?.value, produto: currentProductName(), fornecedor: fornecedor2, d: dB, preco: preco2 });
+        window.pendingItems.push(window.makeItemPayload(os, tipoSel?.value, pid, sid2, preco2, dB));
+      }
+      recomputeTotal();
+      if (typeof window.clearInputs === 'function') window.clearInputs();
+    });
+  }
+
+  const clearBtn = document.getElementById('clear_list');
+  if (clearBtn) {
+    const clone = clearBtn.cloneNode(true);
+    clearBtn.parentNode.replaceChild(clone, clearBtn);
+    clone.addEventListener('click', function() {
+      const tbody = document.querySelector('#items_table tbody');
+      if (tbody) tbody.innerHTML = '';
+      window.pendingItems.length = 0;
+      recomputeTotal();
+    });
+  }
+
+  const form = document.getElementById('pedidoForm');
+  if (form) {
+    const clone = form.cloneNode(true);
+    form.parentNode.replaceChild(clone, form);
+    clone.addEventListener('submit', function(ev) {
+      const hidden = document.getElementById('hidden_payload');
+      if (Array.isArray(window.pendingItems) && window.pendingItems.length > 0) {
+        if (hidden) hidden.value = JSON.stringify(window.pendingItems);
+        ['os_number','product_code','price_main','tipo'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el && el.hasAttribute('required')) el.removeAttribute('required');
+        });
+      } else {
+        if (hidden) hidden.value = '[]';
+      }
+    });
+  }
+})();
+</script>
+<!-- ======== /HOTFIX ======== -->
 {% endblock %}
 
 
